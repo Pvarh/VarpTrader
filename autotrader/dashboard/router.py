@@ -35,13 +35,14 @@ _config: dict = {}
 _start_time: float = time.time()
 _whale_flags: dict = {}   # symbol -> {"buy": bool, "sell": bool, "expires": iso_str}
 _recent_signals: list = []  # last 10 signal events
-_kill_switch_active: bool = False
+_kill_switch = None  # KillSwitch instance
 
 
-def init(db, analyzer, config: dict) -> None:
+def init(db, analyzer, config: dict, kill_switch=None) -> None:
     """Called from main.py to inject dependencies."""
-    global _db, _analyzer, _config
+    global _db, _analyzer, _config, _kill_switch
     _db, _analyzer, _config = db, analyzer, config
+    _kill_switch = kill_switch
     logger.info("dashboard_router_initialized")
 
 
@@ -120,6 +121,13 @@ def _load_weekly_bias() -> dict:
         return {"week_start": "", "generated_at": "", "biases": {}}
 
 
+def _is_kill_switch_active() -> bool:
+    """Check if kill switch is currently halted."""
+    if _kill_switch is not None:
+        return _kill_switch.halted
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # HTML Pages
 # ═══════════════════════════════════════════════════════════════════════════
@@ -159,7 +167,7 @@ async def dashboard_page(request: Request):
         "open_trades": open_trades,
         "recent_trades": recent_trades,
         "pnl_history": json.dumps(pnl_history),
-        "kill_switch_active": _kill_switch_active,
+        "kill_switch_active": _is_kill_switch_active(),
         "paper_mode": paper_mode,
     })
 
@@ -308,7 +316,7 @@ async def health_check():
         "uptime_seconds": round(uptime_seconds, 1),
         "daily_pnl": round(daily_pnl, 2),
         "open_positions": len(open_trades),
-        "kill_switch_active": _kill_switch_active,
+        "kill_switch_active": _is_kill_switch_active(),
         "whale_flags_count": len(_whale_flags),
         "recent_signals_count": len(_recent_signals),
     }
@@ -381,7 +389,7 @@ async def ws_signals(ws: WebSocket):
 
 @router.websocket("/ws/pnl")
 async def ws_pnl(ws: WebSocket):
-    """Stream live PnL updates every 5 seconds."""
+    """Stream live dashboard state every 5 seconds."""
     await manager.connect("pnl", ws)
     try:
         while True:
@@ -389,12 +397,22 @@ async def ws_pnl(ws: WebSocket):
             daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
             open_trades = _db.get_open_trades() if _db else []
 
+            since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+            all_trades = _db.get_trades_since(since) if _db else []
+            all_trades.reverse()
+            recent_trades = all_trades[:20]
+
+            uptime_seconds = time.time() - _start_time
+
             pnl_data = {
                 "type": "pnl_update",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "daily_pnl": round(daily_pnl, 2),
                 "open_positions": len(open_trades),
-                "kill_switch_active": _kill_switch_active,
+                "open_trades": open_trades,
+                "recent_trades": recent_trades,
+                "kill_switch_active": _is_kill_switch_active(),
+                "uptime_seconds": round(uptime_seconds, 1),
             }
             await ws.send_json(pnl_data)
             await asyncio.sleep(5)

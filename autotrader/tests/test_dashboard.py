@@ -226,7 +226,7 @@ class TestDashboardPage:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         body = resp.text
-        assert "AutoTrader Dashboard" in body
+        assert "VarpTrader" in body
 
     def test_dashboard_contains_sections(self, client):
         resp = client.get("/")

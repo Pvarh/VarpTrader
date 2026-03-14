@@ -270,8 +270,13 @@ class AutoTrader:
         if not self._running or self.kill_switch.halted:
             return
         logger.info("scanning_stocks")
-        account = self.stock_executor.get_account()
-        account_value = float(account.get("equity", 0)) if account else 0.0
+
+        if self.paper_trade and self.paper_portfolio:
+            account_value = self.paper_portfolio.equity
+        else:
+            account = self.stock_executor.get_account()
+            account_value = float(account.get("equity", 0)) if account else 0.0
+
         if account_value <= 0:
             logger.warning("no_account_equity")
             return
@@ -356,31 +361,37 @@ class AutoTrader:
         if not self._running or self.kill_switch.halted:
             return
         logger.info("scanning_crypto")
-        balance = self.crypto_executor.get_balance()
-        if not balance:
-            logger.warning("no_crypto_balance")
-            return
 
-        balances = balance.get("free", {})
-        usdc_free = float(balances.get("USDC", 0))
-        usdt_free = float(balances.get("USDT", 0))
-        stable_balance = usdc_free + usdt_free
+        if self.paper_trade and self.paper_portfolio:
+            account_value = self.paper_portfolio.equity
+        else:
+            balance = self.crypto_executor.get_balance()
+            if not balance:
+                logger.warning("no_crypto_balance")
+                return
 
-        if stable_balance <= 1.0:
-            logger.warning("no_crypto_balance | usdc={} usdt={}", usdc_free, usdt_free)
-            return
+            balances = balance.get("free", {})
+            usdc_free = float(balances.get("USDC", 0))
+            usdt_free = float(balances.get("USDT", 0))
+            stable_balance = usdc_free + usdt_free
 
-        # Log which stablecoin(s) found
-        if usdc_free > 0:
-            logger.info("crypto_balance_found | currency=USDC amount={}", round(usdc_free, 2))
-        if usdt_free > 0:
-            logger.info("crypto_balance_found | currency=USDT amount={}", round(usdt_free, 2))
+            if stable_balance <= 1.0:
+                logger.warning("no_crypto_balance | usdc={} usdt={}", usdc_free, usdt_free)
+                return
 
-        # Use total portfolio value for position sizing
-        total = balance.get("total", {})
-        account_value = float(total.get("USDT", 0)) + float(total.get("USDC", 0))
+            if usdc_free > 0:
+                logger.info("crypto_balance_found | currency=USDC amount={}", round(usdc_free, 2))
+            if usdt_free > 0:
+                logger.info("crypto_balance_found | currency=USDT amount={}", round(usdt_free, 2))
+
+            total = balance.get("total", {})
+            account_value = float(total.get("USDT", 0)) + float(total.get("USDC", 0))
+            if account_value <= 0:
+                account_value = stable_balance
+
         if account_value <= 0:
-            account_value = stable_balance
+            logger.warning("no_crypto_account_value")
+            return
 
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today_str)
@@ -798,7 +809,7 @@ def run_live(args) -> None:
     scheduler = BlockingScheduler()
 
     # -- Initialize dashboard with shared state ----------------------------
-    dashboard_init(db=trader.db, analyzer=trader.analyzer, config=trader.config)
+    dashboard_init(db=trader.db, analyzer=trader.analyzer, config=trader.config, kill_switch=trader.kill_switch)
 
     # -- Start dashboard in background thread ------------------------------
     dashboard_cfg = trader.config.get("dashboard", {})

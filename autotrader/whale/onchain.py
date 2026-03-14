@@ -60,7 +60,6 @@ class OnChainWhaleDetector:
         api_key: str,
         crypto_transfer_usd: float = 1_000_000,
         flag_ttl_minutes: int = 15,
-        telegram=None,
     ) -> None:
         self._api_key: str = api_key
         self._min_usd: float = crypto_transfer_usd
@@ -69,7 +68,6 @@ class OnChainWhaleDetector:
         self._accumulation: dict[str, float] = {}    # symbol -> expiry
         self._seen_tx: set[str] = set()
         self._seen_tx_last_clear: float = time.time()
-        self._telegram = telegram
 
         logger.info(
             "onchain_whale_detector_initialised | crypto_transfer_usd={crypto_transfer_usd} flag_ttl_minutes={flag_ttl_minutes}",
@@ -150,10 +148,6 @@ class OnChainWhaleDetector:
                         to_owner=to_owner,
                         tx_hash=tx_hash,
                     )
-                    if self._telegram:
-                        self._telegram.send_whale_alert(
-                            symbol, "sell_pressure", amount_usd, tx_hash,
-                        )
                 elif from_owner in _EXCHANGE_OWNERS:
                     # Withdrawing tokens *from* an exchange -> accumulation
                     self._accumulation[symbol] = expiry
@@ -165,10 +159,6 @@ class OnChainWhaleDetector:
                         to_owner=to_owner,
                         tx_hash=tx_hash,
                     )
-                    if self._telegram:
-                        self._telegram.send_whale_alert(
-                            symbol, "accumulation", amount_usd, tx_hash,
-                        )
                 else:
                     # Whale-to-whale (unknown wallets) -- informational only
                     logger.info(

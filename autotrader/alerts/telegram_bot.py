@@ -62,8 +62,9 @@ class TelegramAlert:
         payload: dict[str, Any] = {
             "chat_id": self._chat_id,
             "text": text,
-            "parse_mode": parse_mode,
         }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
 
         try:
             with httpx.Client(timeout=10.0) as client:
@@ -144,7 +145,7 @@ class TelegramAlert:
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
         lines: list[str] = [
-            f"*{action}* | {symbol}",
+            f"{action} | {symbol}",
             f"Direction: {direction}",
             f"Price: {price}",
             f"Qty: {quantity}",
@@ -155,7 +156,7 @@ class TelegramAlert:
         lines.append(f"Time: {timestamp}")
 
         text = "\n".join(lines)
-        return self.send_message(text)
+        return self.send_message(text, parse_mode="")
 
     # ------------------------------------------------------------------
     # Daily report
@@ -193,52 +194,12 @@ class TelegramAlert:
         """
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         text = (
-            "*KILL SWITCH ACTIVATED*\n\n"
+            "KILL SWITCH ACTIVATED\n\n"
             "Daily loss limit breached. All trading has been halted.\n"
             f"Time: {timestamp}\n\n"
             "Manual review required before resuming operations."
         )
-        return self.send_message(text)
-
-    # ------------------------------------------------------------------
-    # Whale / on-chain alert
-    # ------------------------------------------------------------------
-    def send_whale_alert(
-        self,
-        symbol: str,
-        direction: str,
-        amount_usd: float,
-        tx_hash: str | None = None,
-    ) -> bool:
-        """Send a whale movement notification.
-
-        Parameters
-        ----------
-        symbol:
-            Cryptocurrency symbol (e.g. ``"BTC"``).
-        direction:
-            ``"sell_pressure"`` or ``"accumulation"``.
-        amount_usd:
-            USD value of the transfer.
-        tx_hash:
-            Optional on-chain transaction hash.
-
-        Returns
-        -------
-        bool
-            ``True`` if the alert was delivered successfully.
-        """
-        emoji = "sell pressure" if "sell" in direction.lower() else "accumulation"
-        timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        lines: list[str] = [
-            f"*WHALE ALERT* | {symbol}",
-            f"Type: {emoji}",
-            f"Value: ${amount_usd:,.0f}",
-        ]
-        if tx_hash:
-            lines.append(f"TX: `{tx_hash[:16]}...`")
-        lines.append(f"Time: {timestamp}")
-        return self.send_message("\n".join(lines))
+        return self.send_message(text, parse_mode="")
 
     # ------------------------------------------------------------------
     # Signal triggered (informational)
@@ -282,7 +243,7 @@ class TelegramAlert:
             rr = f"{reward / risk:.1f}:1"
 
         text = (
-            f"*{action}* | {symbol}\n"
+            f"{action} | {symbol}\n"
             f"Strategy: {strategy}\n"
             f"Direction: {direction}\n"
             f"Entry: {entry:.4f}\n"
@@ -290,7 +251,7 @@ class TelegramAlert:
             f"R:R: {rr}\n"
             f"Time: {timestamp}"
         )
-        return self.send_message(text)
+        return self.send_message(text, parse_mode="")
 
     # ------------------------------------------------------------------
     # Trailing stop notification
@@ -311,12 +272,12 @@ class TelegramAlert:
             ``True`` if the alert was delivered successfully.
         """
         text = (
-            f"*TRAILING STOP* | {symbol}\n"
+            f"TRAILING STOP | {symbol}\n"
             f"Trade #{trade_id}\n"
             f"Stop moved: {old_stop:.4f} -> {new_stop:.4f} (breakeven)\n"
             f"Progress to TP: {progress_pct:.0f}%"
         )
-        return self.send_message(text)
+        return self.send_message(text, parse_mode="")
 
     # ------------------------------------------------------------------
     # Error notification
@@ -338,8 +299,8 @@ class TelegramAlert:
         """
         timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         text = (
-            f"*ERROR* | {component}\n"
+            f"ERROR | {component}\n"
             f"{error_msg}\n"
             f"Time: {timestamp}"
         )
-        return self.send_message(text)
+        return self.send_message(text, parse_mode="")

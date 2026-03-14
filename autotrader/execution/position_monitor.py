@@ -161,7 +161,14 @@ class PositionMonitor:
 
             # 4. Check take-profit
             tp_hit: bool = False
-            if direction == "long" and current_price >= take_profit:
+            if not take_profit or take_profit <= 0:
+                logger.warning(
+                    "invalid_take_profit | trade_id={trade_id} symbol={symbol} take_profit={take_profit}",
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    take_profit=take_profit,
+                )
+            elif direction == "long" and current_price >= take_profit:
                 tp_hit = True
             elif direction == "short" and current_price <= take_profit:
                 tp_hit = True

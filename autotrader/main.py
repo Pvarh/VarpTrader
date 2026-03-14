@@ -188,7 +188,6 @@ class AutoTrader:
             bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         )
-        self.onchain_detector._telegram = self.telegram
 
         # -- Analysis --------------------------------------------------------
         self.analyzer = PerformanceAnalyzer(self.db)

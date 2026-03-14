@@ -357,12 +357,30 @@ class AutoTrader:
             return
         logger.info("scanning_crypto")
         balance = self.crypto_executor.get_balance()
-        account_value = (
-            float(balance.get("total", {}).get("USDT", 0)) if balance else 0.0
-        )
-        if account_value <= 0:
+        if not balance:
             logger.warning("no_crypto_balance")
             return
+
+        balances = balance.get("free", {})
+        usdc_free = float(balances.get("USDC", 0))
+        usdt_free = float(balances.get("USDT", 0))
+        stable_balance = usdc_free + usdt_free
+
+        if stable_balance <= 1.0:
+            logger.warning("no_crypto_balance | usdc={} usdt={}", usdc_free, usdt_free)
+            return
+
+        # Log which stablecoin(s) found
+        if usdc_free > 0:
+            logger.info("crypto_balance_found | currency=USDC amount={}", round(usdc_free, 2))
+        if usdt_free > 0:
+            logger.info("crypto_balance_found | currency=USDT amount={}", round(usdt_free, 2))
+
+        # Use total portfolio value for position sizing
+        total = balance.get("total", {})
+        account_value = float(total.get("USDT", 0)) + float(total.get("USDC", 0))
+        if account_value <= 0:
+            account_value = stable_balance
 
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today_str)

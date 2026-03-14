@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% set active_page = "dashboard" %}
+
+{% block title %}Dashboard - AutoTrader{% endblock %}
+
+{% block content %}
+<!-- Status Cards -->
+<div class="status-bar">
+    <div class="status-card">
+        <div class="label">Daily PnL</div>
+        <div class="value {% if daily_pnl > 0 %}pnl-positive{% elif daily_pnl < 0 %}pnl-negative{% else %}pnl-zero{% endif %}" id="dailyPnl">
+            {% if daily_pnl >= 0 %}+{% endif %}${{ "%.2f"|format(daily_pnl|abs) }}
+        </div>
+        <div class="sub" id="dailyPnlDate">{{ now_date if now_date else "Today" }}</div>
+    </div>
+    <div class="status-card">
+        <div class="label">Open Positions</div>
+        <div class="value" id="openPositions">{{ open_trades|length }}</div>
+        <div class="sub">Active trades</div>
+    </div>
+    <div class="status-card">
+        <div class="label">Kill Switch</div>
+        <div class="value {% if kill_switch_active %}pnl-negative{% else %}pnl-positive{% endif %}" id="killSwitch">
+            {% if kill_switch_active %}ACTIVE{% else %}OFF{% endif %}
+        </div>
+        <div class="sub">Circuit breaker</div>
+    </div>
+    <div class="status-card">
+        <div class="label">Mode</div>
+        <div class="value">
+            <span class="mode-badge {% if paper_mode %}mode-paper{% else %}mode-live{% endif %}" id="modeBadge">
+                {% if paper_mode %}PAPER{% else %}LIVE{% endif %}
+            </span>
+        </div>
+        <div class="sub">Trading mode</div>
+    </div>
+</div>
+
+<!-- Equity Curve -->
+<div class="content">
+    <div class="section">
+        <div class="section-header">Equity Curve (30 Days)</div>
+        <div class="section-body">
+            <div class="chart-container">
+                <canvas id="equityChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Open Positions Table -->
+    <div class="section">
+        <div class="section-header">Open Positions</div>
+        <div class="section-body">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Symbol</th>
+                            <th>Strategy</th>
+                            <th>Direction</th>
+                            <th>Entry Price</th>
+                            <th>Qty</th>
+                            <th>Stop Loss</th>
+                            <th>Take Profit</th>
+                            <th>Whale</th>
+                            <th>Opened</th>
+                        </tr>
+                    </thead>
+                    <tbody id="openTradesBody">
+                        {% if open_trades %}
+                            {% for t in open_trades %}
+                            <tr>
+                                <td>{{ t.id or '--' }}</td>
+                                <td><strong>{{ t.symbol }}</strong></td>
+                                <td>{{ t.strategy }}</td>
+                                <td>
+                                    <span class="badge {% if t.direction == 'long' %}badge-long{% else %}badge-short{% endif %}">
+                                        {{ t.direction }}
+                                    </span>
+                                </td>
+                                <td>{{ "%.2f"|format(t.entry_price) }}</td>
+                                <td>{{ t.quantity }}</td>
+                                <td>{{ "%.2f"|format(t.stop_loss) }}</td>
+                                <td>{{ "%.2f"|format(t.take_profit) }}</td>
+                                <td>{% if t.whale_flag %}Yes{% else %}No{% endif %}</td>
+                                <td>{{ t.timestamp[:16] }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="10" class="loading-text">No open positions</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Trades Table -->
+    <div class="section">
+        <div class="section-header">Recent Trades (Last 20)</div>
+        <div class="section-body">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Symbol</th>
+                            <th>Strategy</th>
+                            <th>Direction</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>PnL</th>
+                            <th>PnL %</th>
+                            <th>Outcome</th>
+                            <th>Whale</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recentTradesBody">
+                        {% if recent_trades %}
+                            {% for t in recent_trades %}
+                            <tr>
+                                <td>{{ t.id or '--' }}</td>
+                                <td><strong>{{ t.symbol }}</strong></td>
+                                <td>{{ t.strategy }}</td>
+                                <td>
+                                    <span class="badge {% if t.direction == 'long' %}badge-long{% else %}badge-short{% endif %}">
+                                        {{ t.direction }}
+                                    </span>
+                                </td>
+                                <td>{{ "%.2f"|format(t.entry_price) if t.entry_price else '--' }}</td>
+                                <td>{{ "%.2f"|format(t.exit_price) if t.exit_price else '--' }}</td>
+                                <td class="{% if t.pnl and t.pnl > 0 %}pnl-positive{% elif t.pnl and t.pnl < 0 %}pnl-negative{% else %}pnl-zero{% endif %}">
+                                    {% if t.pnl is not none %}{% if t.pnl >= 0 %}+{% endif %}${{ "%.2f"|format(t.pnl|abs) }}{% else %}--{% endif %}
+                                </td>
+                                <td class="{% if t.pnl_pct and t.pnl_pct > 0 %}pnl-positive{% elif t.pnl_pct and t.pnl_pct < 0 %}pnl-negative{% else %}pnl-zero{% endif %}">
+                                    {% if t.pnl_pct is not none %}{{ "%.2f"|format(t.pnl_pct * 100) }}%{% else %}--{% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge badge-{{ t.outcome or 'open' }}">{{ t.outcome or 'open' }}</span>
+                                </td>
+                                <td>{% if t.whale_flag %}Yes{% else %}No{% endif %}</td>
+                                <td>{{ t.timestamp[:16] }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="11" class="loading-text">No recent trades</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    /* ================================================================
+       Equity Curve Chart
+       ================================================================ */
+    const pnlHistory = {{ pnl_history|safe }};
+    let equityChart = null;
+
+    function renderEquityChart() {
+        const labels = pnlHistory.map(h => {
+            const d = new Date(h.date + 'T00:00:00');
+            return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        });
+
+        // Compute cumulative PnL for equity curve
+        let cumulative = 0;
+        const cumulativeValues = pnlHistory.map(h => {
+            cumulative += h.pnl;
+            return parseFloat(cumulative.toFixed(2));
+        });
+
+        const ctx = document.getElementById('equityChart').getContext('2d');
+        if (equityChart) equityChart.destroy();
+
+        equityChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Cumulative PnL ($)',
+                    data: cumulativeValues,
+                    borderColor: '#4da6ff',
+                    backgroundColor: 'rgba(77,166,255,0.1)',
+                    fill: true,
+                    tension: 0.3,
+                    pointRadius: 3,
+                    pointBackgroundColor: cumulativeValues.map(v =>
+                        v >= 0 ? '#00c853' : '#ff1744'
+                    ),
+                    pointBorderColor: cumulativeValues.map(v =>
+                        v >= 0 ? '#00c853' : '#ff1744'
+                    ),
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                const v = ctx.parsed.y;
+                                return (v >= 0 ? '+' : '') + '$' + v.toFixed(2);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        grid: { color: 'rgba(45,49,72,0.5)' },
+                        ticks: {
+                            color: '#8b8fa3',
+                            callback: v => (v >= 0 ? '+' : '') + '$' + v
+                        }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#8b8fa3', font: { size: 10 }, maxTicksLimit: 10 }
+                    }
+                }
+            }
+        });
+    }
+
+    /* ================================================================
+       WebSocket: live PnL updates
+       ================================================================ */
+    let pnlSocket = null;
+    let reconnectAttempts = 0;
+
+    function connectPnlWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = protocol + '//' + window.location.host + '/ws/pnl';
+
+        pnlSocket = new WebSocket(wsUrl);
+
+        pnlSocket.onopen = function() {
+            console.log('PnL WebSocket connected');
+            reconnectAttempts = 0;
+        };
+
+        pnlSocket.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            if (data.type === 'pnl_update') {
+                // Update daily PnL card
+                const pnlEl = document.getElementById('dailyPnl');
+                const pnl = data.daily_pnl;
+                pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
+                pnlEl.className = 'value ' + (pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-zero');
+
+                // Update open positions count
+                document.getElementById('openPositions').textContent = data.open_positions;
+
+                // Update kill switch
+                const ksEl = document.getElementById('killSwitch');
+                ksEl.textContent = data.kill_switch_active ? 'ACTIVE' : 'OFF';
+                ksEl.className = 'value ' + (data.kill_switch_active ? 'pnl-negative' : 'pnl-positive');
+            }
+        };
+
+        pnlSocket.onclose = function() {
+            console.log('PnL WebSocket closed, reconnecting...');
+            reconnectAttempts++;
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
+            setTimeout(connectPnlWebSocket, delay);
+        };
+
+        pnlSocket.onerror = function(err) {
+            console.error('PnL WebSocket error:', err);
+        };
+    }
+
+    /* ================================================================
+       Auto-refresh via /health
+       ================================================================ */
+    async function checkHealth() {
+        try {
+            const resp = await fetch('/health');
+            if (resp.ok) {
+                const data = await resp.json();
+                // Could update indicators here
+            }
+        } catch (e) {
+            console.warn('Health check failed:', e);
+        }
+    }
+
+    /* ================================================================
+       Init
+       ================================================================ */
+    document.addEventListener('DOMContentLoaded', function() {
+        renderEquityChart();
+        connectPnlWebSocket();
+        // Health check every 30 seconds
+        setInterval(checkHealth, 30000);
+    });
+</script>
+{% endblock %}

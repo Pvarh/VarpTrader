@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}AutoTrader Dashboard{% endblock %}</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        /* Inline critical styles for fast first paint */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-primary: #0f1117;
+            --bg-card: #1a1d27;
+            --bg-card-alt: #222636;
+            --border: #2d3148;
+            --text-primary: #e6e6e6;
+            --text-secondary: #8b8fa3;
+            --green: #00c853;
+            --green-dim: rgba(0,200,83,0.15);
+            --red: #ff1744;
+            --red-dim: rgba(255,23,68,0.15);
+            --blue: #4da6ff;
+            --blue-dim: rgba(77,166,255,0.15);
+            --yellow: #ffc34d;
+            --yellow-dim: rgba(255,195,77,0.15);
+            --purple: #a78bfa;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        /* Navigation */
+        .navbar {
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+        .navbar-brand {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            text-decoration: none;
+            padding: 14px 0;
+            letter-spacing: -0.02em;
+        }
+        .navbar-links {
+            display: flex;
+            gap: 0;
+            list-style: none;
+        }
+        .navbar-links a {
+            display: block;
+            padding: 14px 18px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            transition: color 0.2s, border-color 0.2s;
+        }
+        .navbar-links a:hover {
+            color: var(--text-primary);
+        }
+        .navbar-links a.active {
+            color: var(--blue);
+            border-bottom-color: var(--blue);
+        }
+
+        @media (max-width: 600px) {
+            .navbar {
+                padding: 0 12px;
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .navbar-links {
+                width: 100%;
+                overflow-x: auto;
+            }
+            .navbar-links a {
+                padding: 10px 14px;
+                font-size: 0.82rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav class="navbar">
+    <a href="/" class="navbar-brand">AutoTrader Dashboard</a>
+    <ul class="navbar-links">
+        <li><a href="/" class="{% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a></li>
+        <li><a href="/trades" class="{% if active_page == 'trades' %}active{% endif %}">Trades</a></li>
+        <li><a href="/analysis" class="{% if active_page == 'analysis' %}active{% endif %}">Analysis</a></li>
+        <li><a href="/config" class="{% if active_page == 'config' %}active{% endif %}">Config</a></li>
+    </ul>
+</nav>
+
+<!-- Page Content -->
+<main class="page-content">
+    {% block content %}{% endblock %}
+</main>
+
+{% block scripts %}{% endblock %}
+
+</body>
+</html>

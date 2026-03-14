@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% set active_page = "trades" %}
+
+{% block title %}Trades - AutoTrader Dashboard{% endblock %}
+
+{% block content %}
+<div class="content">
+    <!-- Filter Form -->
+    <div class="section">
+        <div class="section-header">Filter Trades</div>
+        <div class="section-body">
+            <form method="get" action="/trades" class="filter-form">
+                <div class="filter-row">
+                    <div class="filter-group">
+                        <label for="strategy">Strategy</label>
+                        <select name="strategy" id="strategy">
+                            <option value="">All Strategies</option>
+                            {% for s in strategies %}
+                            <option value="{{ s }}" {% if filter_strategy == s %}selected{% endif %}>{{ s }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="outcome">Outcome</label>
+                        <select name="outcome" id="outcome">
+                            <option value="">All Outcomes</option>
+                            <option value="win" {% if filter_outcome == 'win' %}selected{% endif %}>Win</option>
+                            <option value="loss" {% if filter_outcome == 'loss' %}selected{% endif %}>Loss</option>
+                            <option value="breakeven" {% if filter_outcome == 'breakeven' %}selected{% endif %}>Breakeven</option>
+                            <option value="open" {% if filter_outcome == 'open' %}selected{% endif %}>Open</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="market">Market</label>
+                        <select name="market" id="market">
+                            <option value="">All Markets</option>
+                            {% for m in markets %}
+                            <option value="{{ m }}" {% if filter_market == m %}selected{% endif %}>{{ m }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label for="days">Days</label>
+                        <input type="number" name="days" id="days" value="{{ filter_days }}" min="1" max="365">
+                    </div>
+                    <div class="filter-group filter-actions">
+                        <button type="submit" class="btn btn-primary">Apply</button>
+                        <a href="/trades" class="btn btn-secondary">Reset</a>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Trade Count -->
+    <div class="trade-summary">
+        Showing {{ trades|length }} of {{ total }} trades (page {{ page }} of {{ total_pages }})
+    </div>
+
+    <!-- Trades Table -->
+    <div class="section">
+        <div class="section-header">Trade Journal</div>
+        <div class="section-body">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Timestamp</th>
+                            <th>Symbol</th>
+                            <th>Market</th>
+                            <th>Strategy</th>
+                            <th>Direction</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>Qty</th>
+                            <th>Stop Loss</th>
+                            <th>Take Profit</th>
+                            <th>PnL</th>
+                            <th>PnL %</th>
+                            <th>Outcome</th>
+                            <th>Whale</th>
+                            <th>Day</th>
+                            <th>Hour</th>
+                            <th>Condition</th>
+                            <th>Paper</th>
+                            <th>Swing Bias</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if trades %}
+                            {% for t in trades %}
+                            <tr>
+                                <td>{{ t.id or '--' }}</td>
+                                <td>{{ t.timestamp[:19] if t.timestamp else '--' }}</td>
+                                <td><strong>{{ t.symbol }}</strong></td>
+                                <td>{{ t.market }}</td>
+                                <td>{{ t.strategy }}</td>
+                                <td>
+                                    <span class="badge {% if t.direction == 'long' %}badge-long{% else %}badge-short{% endif %}">
+                                        {{ t.direction }}
+                                    </span>
+                                </td>
+                                <td>{{ "%.2f"|format(t.entry_price) if t.entry_price else '--' }}</td>
+                                <td>{{ "%.2f"|format(t.exit_price) if t.exit_price else '--' }}</td>
+                                <td>{{ t.quantity }}</td>
+                                <td>{{ "%.2f"|format(t.stop_loss) if t.stop_loss else '--' }}</td>
+                                <td>{{ "%.2f"|format(t.take_profit) if t.take_profit else '--' }}</td>
+                                <td class="{% if t.pnl and t.pnl > 0 %}pnl-positive{% elif t.pnl and t.pnl < 0 %}pnl-negative{% else %}pnl-zero{% endif %}">
+                                    {% if t.pnl is not none %}{% if t.pnl >= 0 %}+{% endif %}${{ "%.2f"|format(t.pnl|abs) }}{% else %}--{% endif %}
+                                </td>
+                                <td class="{% if t.pnl_pct and t.pnl_pct > 0 %}pnl-positive{% elif t.pnl_pct and t.pnl_pct < 0 %}pnl-negative{% else %}pnl-zero{% endif %}">
+                                    {% if t.pnl_pct is not none %}{{ "%.2f"|format(t.pnl_pct * 100) }}%{% else %}--{% endif %}
+                                </td>
+                                <td>
+                                    <span class="badge badge-{{ t.outcome or 'open' }}">{{ t.outcome or 'open' }}</span>
+                                </td>
+                                <td>{% if t.whale_flag %}Yes{% else %}No{% endif %}</td>
+                                <td>{{ t.day_of_week[:3] if t.day_of_week else '--' }}</td>
+                                <td>{{ t.hour_of_day if t.hour_of_day is not none else '--' }}</td>
+                                <td>{{ t.market_condition or '--' }}</td>
+                                <td>{% if t.paper_trade %}Yes{% else %}No{% endif %}</td>
+                                <td>{{ t.swing_bias or '--' }}</td>
+                            </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr><td colspan="20" class="loading-text">No trades found matching filters</td></tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="/trades?strategy={{ filter_strategy }}&outcome={{ filter_outcome }}&market={{ filter_market }}&days={{ filter_days }}&page={{ page - 1 }}" class="btn btn-secondary">Previous</a>
+        {% endif %}
+
+        {% for p in range(1, total_pages + 1) %}
+            {% if p == page %}
+            <span class="btn btn-primary">{{ p }}</span>
+            {% elif p <= 3 or p >= total_pages - 2 or (p >= page - 1 and p <= page + 1) %}
+            <a href="/trades?strategy={{ filter_strategy }}&outcome={{ filter_outcome }}&market={{ filter_market }}&days={{ filter_days }}&page={{ p }}" class="btn btn-secondary">{{ p }}</a>
+            {% elif p == 4 or p == total_pages - 3 %}
+            <span class="pagination-ellipsis">...</span>
+            {% endif %}
+        {% endfor %}
+
+        {% if page < total_pages %}
+        <a href="/trades?strategy={{ filter_strategy }}&outcome={{ filter_outcome }}&market={{ filter_market }}&days={{ filter_days }}&page={{ page + 1 }}" class="btn btn-secondary">Next</a>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

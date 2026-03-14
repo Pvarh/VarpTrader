@@ -1,0 +1,20 @@
+services:
+  autotrader:
+    build: .
+    container_name: autotrader
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.json:/app/config.json:ro
+      - ./weekly_bias.json:/app/weekly_bias.json:ro
+    ports:
+      - "8000:8000"
+    networks:
+      - trader-net
+
+networks:
+  trader-net:
+    driver: bridge

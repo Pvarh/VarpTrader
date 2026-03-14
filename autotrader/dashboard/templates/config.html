@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+{% set active_page = "config" %}
+
+{% block title %}Config - AutoTrader Dashboard{% endblock %}
+
+{% block content %}
+<div class="content">
+    <!-- Pending AI Changes -->
+    {% if not auto_apply and pending_changes %}
+    <div class="section" style="border-color: var(--yellow);">
+        <div class="section-header" style="color: var(--yellow);">Pending AI Config Changes</div>
+        <div class="section-body">
+            {% for change in pending_changes %}
+            <div class="pending-change-card">
+                <div class="pending-header">
+                    <span>Run #{{ change.id }} - {{ change.run_timestamp[:19] }}</span>
+                    <span>Trades Analyzed: {{ change.trades_analyzed }}</span>
+                </div>
+                {% if change.config_changes_json %}
+                <pre class="report-text">{{ change.config_changes_json }}</pre>
+                {% endif %}
+                <div style="margin-top: 12px;">
+                    <button class="btn btn-primary" onclick="approveChange({{ change.id }})">
+                        Approve Changes
+                    </button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% elif not auto_apply %}
+    <div class="section">
+        <div class="section-header">Pending AI Config Changes</div>
+        <div class="section-body">
+            <p class="loading-text">No pending changes. auto_apply_changes is set to <strong>{{ auto_apply }}</strong>.</p>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Watchlist -->
+    {% if config.watchlist %}
+    <div class="section">
+        <div class="section-header">Watchlist</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% if config.watchlist.stocks %}
+                <div class="config-item">
+                    <div class="cparam">Stocks</div>
+                    <div class="cvalue" style="font-size: 0.9rem;">{{ config.watchlist.stocks | join(', ') }}</div>
+                </div>
+                {% endif %}
+                {% if config.watchlist.crypto %}
+                <div class="config-item">
+                    <div class="cparam">Crypto</div>
+                    <div class="cvalue" style="font-size: 0.9rem;">{{ config.watchlist.crypto | join(', ') }}</div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Strategies -->
+    {% if config.strategies %}
+    <div class="section">
+        <div class="section-header">Strategies</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for name, settings in config.strategies.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ name }}</div>
+                    <div class="cvalue">
+                        <span class="badge {% if settings.enabled %}badge-win{% else %}badge-loss{% endif %}">
+                            {% if settings.enabled %}Enabled{% else %}Disabled{% endif %}
+                        </span>
+                    </div>
+                    <div class="config-details">
+                        {% for key, val in settings.items() %}
+                            {% if key != 'enabled' %}
+                            <div class="config-detail-row">
+                                <span class="config-detail-key">{{ key }}:</span>
+                                <span class="config-detail-val">{{ val }}</span>
+                            </div>
+                            {% endif %}
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Risk Management -->
+    {% if config.risk %}
+    <div class="section">
+        <div class="section-header">Risk Management</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for key, val in config.risk.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ key }}</div>
+                    <div class="cvalue">{{ val }}</div>
+                    {% if config.bounds and key in config.bounds %}
+                    <div class="cbounds">Bounds: {{ config.bounds[key].min }} - {{ config.bounds[key].max }}</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Bounds -->
+    {% if config.bounds %}
+    <div class="section">
+        <div class="section-header">Parameter Bounds</div>
+        <div class="section-body">
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Min</th>
+                            <th>Max</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for param, bounds in config.bounds.items() %}
+                        <tr>
+                            <td><strong>{{ param }}</strong></td>
+                            <td>{{ bounds.min }}</td>
+                            <td>{{ bounds.max }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Whale Config -->
+    {% if config.whale %}
+    <div class="section">
+        <div class="section-header">Whale Detection</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for key, val in config.whale.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ key }}</div>
+                    <div class="cvalue">{{ val }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Swing Advisor -->
+    {% if config.swing_advisor %}
+    <div class="section">
+        <div class="section-header">Swing Advisor</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for key, val in config.swing_advisor.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ key }}</div>
+                    <div class="cvalue">{{ val }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Analysis Config -->
+    {% if config.analysis %}
+    <div class="section">
+        <div class="section-header">Analysis Settings</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for key, val in config.analysis.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ key }}</div>
+                    <div class="cvalue">{{ val }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Go-Live Thresholds -->
+    {% if config.go_live_thresholds %}
+    <div class="section">
+        <div class="section-header">Go-Live Thresholds</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for key, val in config.go_live_thresholds.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ key }}</div>
+                    <div class="cvalue">{{ val }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Dashboard Config -->
+    {% if config.dashboard %}
+    <div class="section">
+        <div class="section-header">Dashboard Settings</div>
+        <div class="section-body">
+            <div class="config-grid">
+                {% for key, val in config.dashboard.items() %}
+                <div class="config-item">
+                    <div class="cparam">{{ key }}</div>
+                    <div class="cvalue">{{ val }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function approveChange(runId) {
+        const apiKey = prompt('Enter Dashboard API Key:');
+        if (!apiKey) return;
+
+        try {
+            const resp = await fetch('/config/approve/' + runId, {
+                method: 'POST',
+                headers: {
+                    'X-API-Key': apiKey,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            const data = await resp.json();
+
+            if (resp.ok) {
+                alert('Changes approved successfully for run #' + runId);
+                window.location.reload();
+            } else {
+                alert('Error: ' + (data.detail || 'Unknown error'));
+            }
+        } catch (e) {
+            alert('Request failed: ' + e.message);
+        }
+    }
+</script>
+{% endblock %}

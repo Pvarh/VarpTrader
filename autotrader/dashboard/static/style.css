@@ -1,0 +1,579 @@
+/* ================================================================
+   AutoTrader Dashboard - Dark Theme CSS
+   ================================================================ */
+
+/* Reset & Variables */
+*, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+:root {
+    --bg-primary: #0f1117;
+    --bg-card: #1a1d27;
+    --bg-card-alt: #222636;
+    --border: #2d3148;
+    --text-primary: #e6e6e6;
+    --text-secondary: #8b8fa3;
+    --green: #00c853;
+    --green-dim: rgba(0,200,83,0.15);
+    --red: #ff1744;
+    --red-dim: rgba(255,23,68,0.15);
+    --blue: #4da6ff;
+    --blue-dim: rgba(77,166,255,0.15);
+    --yellow: #ffc34d;
+    --yellow-dim: rgba(255,195,77,0.15);
+    --purple: #a78bfa;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+/* ================================================================
+   Navigation
+   ================================================================ */
+.navbar {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+}
+
+.navbar-brand {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    text-decoration: none;
+    padding: 14px 0;
+    letter-spacing: -0.02em;
+}
+
+.navbar-links {
+    display: flex;
+    gap: 0;
+    list-style: none;
+}
+
+.navbar-links a {
+    display: block;
+    padding: 14px 18px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: color 0.2s, border-color 0.2s;
+}
+
+.navbar-links a:hover {
+    color: var(--text-primary);
+}
+
+.navbar-links a.active {
+    color: var(--blue);
+    border-bottom-color: var(--blue);
+}
+
+/* ================================================================
+   Page Content
+   ================================================================ */
+.page-content {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* ================================================================
+   Status Bar
+   ================================================================ */
+.status-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    padding: 20px 24px;
+}
+
+.status-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+}
+
+.status-card .label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+}
+
+.status-card .value {
+    font-size: 1.5rem;
+    font-weight: 700;
+}
+
+.status-card .sub {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+/* ================================================================
+   Main Content Area
+   ================================================================ */
+.content {
+    padding: 0 24px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+/* ================================================================
+   Section Cards
+   ================================================================ */
+.section {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.section-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    font-size: 1rem;
+    font-weight: 600;
+}
+
+.section-body {
+    padding: 20px;
+}
+
+/* ================================================================
+   Tables
+   ================================================================ */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+}
+
+thead th {
+    text-align: left;
+    padding: 10px 12px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+tbody td {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+tbody tr:last-child td {
+    border-bottom: none;
+}
+
+tbody tr:hover {
+    background: var(--bg-card-alt);
+}
+
+.table-wrap {
+    overflow-x: auto;
+}
+
+/* ================================================================
+   PnL Colors
+   ================================================================ */
+.pnl-positive { color: var(--green); }
+.pnl-negative { color: var(--red); }
+.pnl-zero { color: var(--text-secondary); }
+
+/* ================================================================
+   Badges
+   ================================================================ */
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.badge-win { background: var(--green-dim); color: var(--green); }
+.badge-loss { background: var(--red-dim); color: var(--red); }
+.badge-breakeven { background: var(--blue-dim); color: var(--blue); }
+.badge-open { background: var(--yellow-dim); color: var(--yellow); }
+.badge-long { background: var(--green-dim); color: var(--green); }
+.badge-short { background: var(--red-dim); color: var(--red); }
+
+/* ================================================================
+   Mode Badge
+   ================================================================ */
+.mode-badge {
+    padding: 4px 14px;
+    border-radius: 20px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.mode-paper { background: var(--yellow-dim); color: var(--yellow); }
+.mode-live  { background: var(--red-dim); color: var(--red); }
+
+/* ================================================================
+   Charts
+   ================================================================ */
+.chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+}
+
+.chart-container {
+    position: relative;
+    height: 320px;
+}
+
+/* ================================================================
+   Whale Correlation
+   ================================================================ */
+.whale-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.whale-card {
+    background: var(--bg-card-alt);
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+}
+
+.whale-card .wlabel {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.whale-card .wvalue {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+/* ================================================================
+   Config Grid
+   ================================================================ */
+.config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+}
+
+.config-item {
+    background: var(--bg-card-alt);
+    border-radius: 8px;
+    padding: 14px 18px;
+}
+
+.config-item .cparam {
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--blue);
+    margin-bottom: 6px;
+}
+
+.config-item .cvalue {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+
+.config-item .cbounds {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.config-details {
+    margin-top: 8px;
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+}
+
+.config-detail-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    padding: 2px 0;
+}
+
+.config-detail-key {
+    color: var(--text-secondary);
+}
+
+.config-detail-val {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* ================================================================
+   Filter Form
+   ================================================================ */
+.filter-form {
+    width: 100%;
+}
+
+.filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: flex-end;
+}
+
+.filter-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 140px;
+}
+
+.filter-group label {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.filter-group select,
+.filter-group input {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    padding: 8px 12px;
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.filter-group select:focus,
+.filter-group input:focus {
+    border-color: var(--blue);
+}
+
+.filter-actions {
+    flex-direction: row;
+    gap: 8px;
+}
+
+/* ================================================================
+   Buttons
+   ================================================================ */
+.btn {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    transition: background 0.2s, color 0.2s;
+}
+
+.btn-primary {
+    background: var(--blue);
+    color: #fff;
+    border-color: var(--blue);
+}
+
+.btn-primary:hover {
+    background: #3d96ef;
+}
+
+.btn-secondary {
+    background: var(--bg-card-alt);
+    color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+    background: var(--border);
+}
+
+/* ================================================================
+   Pagination
+   ================================================================ */
+.pagination {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    align-items: center;
+    padding: 16px 0;
+    flex-wrap: wrap;
+}
+
+.pagination-ellipsis {
+    color: var(--text-secondary);
+    padding: 4px 8px;
+}
+
+/* ================================================================
+   Trade Summary
+   ================================================================ */
+.trade-summary {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    padding: 4px 0;
+}
+
+/* ================================================================
+   Report / Markdown content
+   ================================================================ */
+.report-content {
+    margin-top: 16px;
+}
+
+.report-text {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.82rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-x: auto;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* ================================================================
+   Pending Change Card
+   ================================================================ */
+.pending-change-card {
+    background: var(--bg-card-alt);
+    border: 1px solid var(--yellow-dim);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.pending-change-card:last-child {
+    margin-bottom: 0;
+}
+
+.pending-header {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+}
+
+/* ================================================================
+   Loading State
+   ================================================================ */
+.loading-text {
+    color: var(--text-secondary);
+    font-style: italic;
+    padding: 20px;
+    text-align: center;
+}
+
+/* ================================================================
+   Analysis Details
+   ================================================================ */
+.analysis-details {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+/* ================================================================
+   Responsive
+   ================================================================ */
+@media (max-width: 768px) {
+    .navbar {
+        padding: 0 12px;
+    }
+
+    .status-bar {
+        padding: 16px;
+        gap: 12px;
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .content {
+        padding: 0 16px 24px;
+    }
+
+    .chart-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .whale-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .config-grid {
+        grid-template-columns: 1fr;
+    }
+
+    table {
+        font-size: 0.78rem;
+    }
+
+    thead th, tbody td {
+        padding: 8px 8px;
+    }
+
+    .filter-row {
+        flex-direction: column;
+    }
+
+    .filter-group {
+        width: 100%;
+    }
+}
+
+@media (max-width: 600px) {
+    .navbar {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .navbar-links {
+        width: 100%;
+        overflow-x: auto;
+    }
+
+    .navbar-links a {
+        padding: 10px 14px;
+        font-size: 0.82rem;
+    }
+}
+
+@media (max-width: 480px) {
+    .status-bar {
+        grid-template-columns: 1fr;
+    }
+}

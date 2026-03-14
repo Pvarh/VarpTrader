@@ -207,12 +207,20 @@ class StockFeed:
             )
             return bars
 
-        except Exception:
-            logger.exception(
-                "polygon_bars_error | symbol={symbol} period={period}",
-                symbol=symbol,
-                period=period,
-            )
+        except Exception as exc:
+            import requests as _req
+            if isinstance(exc, _req.exceptions.HTTPError) and hasattr(exc, "response") and exc.response is not None and exc.response.status_code == 429:
+                logger.warning(
+                    "polygon_rate_limited | symbol={symbol} period={period}",
+                    symbol=symbol,
+                    period=period,
+                )
+            else:
+                logger.exception(
+                    "polygon_bars_error | symbol={symbol} period={period}",
+                    symbol=symbol,
+                    period=period,
+                )
             return []
 
     def _fetch_yfinance_bars(

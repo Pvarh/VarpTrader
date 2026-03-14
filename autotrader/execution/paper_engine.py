@@ -472,6 +472,14 @@ class PaperExecutor:
         whale_flag = kwargs.get("whale_flag", 0)
 
         try:
+            # Validate funds BEFORE touching the database
+            cost = abs(quantity) * fill_price
+            if cost > self._portfolio.cash:
+                raise ValueError(
+                    f"Insufficient cash: need {cost:.2f}, "
+                    f"have {self._portfolio.cash:.2f}"
+                )
+
             # Journal the trade entry
             trade = Trade(
                 symbol=symbol,

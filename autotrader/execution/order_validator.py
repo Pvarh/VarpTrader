@@ -151,6 +151,21 @@ class OrderValidator:
             )
             return False, reason
 
+        # 5b. Duplicate base asset (e.g. reject ETH/USDC when ETH/USDT is open)
+        if open_symbols:
+            base = symbol.split("/")[0] if "/" in symbol else None
+            if base:
+                for os_sym in open_symbols:
+                    os_base = os_sym.split("/")[0] if "/" in os_sym else None
+                    if os_base and os_base == base:
+                        reason = f"Duplicate base asset -- {os_sym} already open for {base}"
+                        logger.warning(
+                            "order_rejected_duplicate_base | symbol={symbol} existing={existing}",
+                            symbol=symbol,
+                            existing=os_sym,
+                        )
+                        return False, reason
+
         # 6. Max daily trades
         if daily_trade_count >= self._max_daily_trades:
             reason = (

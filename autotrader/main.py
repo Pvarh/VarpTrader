@@ -135,14 +135,14 @@ class AutoTrader:
         whale_cfg = self.config["whale"]
         self.block_detector = BlockTradeDetector(
             api_key=os.getenv("POLYGON_API_KEY", ""),
-            min_shares=whale_cfg.get("stock_block_shares", 50000),
-            min_value=whale_cfg.get("stock_block_usd", 2_000_000),
-            flag_duration_min=whale_cfg.get("flag_ttl_minutes", 15),
+            stock_block_shares=whale_cfg.get("stock_block_shares", 50000),
+            stock_block_usd=whale_cfg.get("stock_block_usd", 2_000_000),
+            flag_ttl_minutes=whale_cfg.get("flag_ttl_minutes", 15),
         )
         self.onchain_detector = OnChainWhaleDetector(
             api_key=os.getenv("WHALE_ALERT_API_KEY", ""),
-            min_usd=whale_cfg.get("crypto_transfer_usd", 1_000_000),
-            flag_duration_min=whale_cfg.get("flag_ttl_minutes", 15),
+            crypto_transfer_usd=whale_cfg.get("crypto_transfer_usd", 1_000_000),
+            flag_ttl_minutes=whale_cfg.get("flag_ttl_minutes", 15),
         )
         self.orderbook_scanner = OrderBookScanner()
 

@@ -19,14 +19,19 @@
     "stop_loss_pct": 0.015,
     "daily_loss_limit_pct": 0.03,
     "min_reward_ratio": 2.0,
-    "atr_period": 14
+    "atr_period": 14,
+    "atr_multiplier": 1.5,
+    "max_positions": 10,
+    "max_daily_trades": 20
   },
   "whale": {
     "enabled": true,
     "stock_block_shares": 50000,
     "stock_block_usd": 2000000,
     "crypto_transfer_usd": 1000000,
-    "flag_ttl_minutes": 15
+    "flag_ttl_minutes": 15,
+    "poll_interval_stocks_sec": 60,
+    "poll_interval_crypto_sec": 30
   },
   "swing_advisor": {
     "enabled": true,
@@ -35,6 +40,7 @@
   },
   "analysis": {
     "nightly_run_time": "23:30",
+    "lookback_days": 30,
     "min_trades_for_suggestion": 15,
     "min_winrate_diff_to_suggest": 0.10,
     "model": "claude-sonnet-4-6",

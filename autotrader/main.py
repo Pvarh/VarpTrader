@@ -896,6 +896,16 @@ def run_live(args) -> None:
     signal_mod.signal(signal_mod.SIGTERM, _signal_handler)
 
     logger.info("autotrader_started | paper_trade={}", trader.paper_trade)
+    mode = "PAPER" if trader.paper_trade else "LIVE"
+    stocks = trader.config.get("watchlist", {}).get("stocks", [])
+    crypto = trader.config.get("watchlist", {}).get("crypto", [])
+    trader.telegram.send_message(
+        f"VarpTrader started ({mode} mode)\n"
+        f"Stocks: {', '.join(stocks)}\n"
+        f"Crypto: {', '.join(crypto)}\n"
+        f"Dashboard: http://0.0.0.0:{trader.config.get('dashboard', {}).get('port', 8000)}",
+        parse_mode="",
+    )
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

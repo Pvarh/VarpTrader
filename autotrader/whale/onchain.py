@@ -66,6 +66,8 @@ class OnChainWhaleDetector:
         self._flag_duration: int = flag_ttl_minutes * 60  # seconds
         self._sell_pressure: dict[str, float] = {}   # symbol -> expiry
         self._accumulation: dict[str, float] = {}    # symbol -> expiry
+        self._seen_tx: set[str] = set()
+        self._seen_tx_last_clear: float = time.time()
 
         logger.info(
             "onchain_whale_detector_initialised | crypto_transfer_usd={crypto_transfer_usd} flag_ttl_minutes={flag_ttl_minutes}",
@@ -85,6 +87,7 @@ class OnChainWhaleDetector:
         receiver.
         """
         self._cleanup_expired()
+        self._clear_seen_tx_if_stale()
 
         lookback_seconds = 600  # 10 minutes
         start_ts = int(time.time()) - lookback_seconds
@@ -129,6 +132,10 @@ class OnChainWhaleDetector:
 
                 if not symbol:
                     continue
+
+                if tx_hash in self._seen_tx:
+                    continue
+                self._seen_tx.add(tx_hash)
 
                 if to_owner in _EXCHANGE_OWNERS:
                     # Moving tokens *to* an exchange -> sell pressure
@@ -231,3 +238,11 @@ class OnChainWhaleDetector:
         for s in expired_acc:
             del self._accumulation[s]
             logger.debug("accumulation_expired | symbol={symbol}", symbol=s)
+
+    def _clear_seen_tx_if_stale(self) -> None:
+        """Clear the seen tx_hash set every 24 hours to prevent memory growth."""
+        now = time.time()
+        if now - self._seen_tx_last_clear >= 86_400:
+            self._seen_tx.clear()
+            self._seen_tx_last_clear = now
+            logger.debug("seen_tx_hashes_cleared")

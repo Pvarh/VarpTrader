@@ -1,7 +1,7 @@
 {
   "watchlist": {
     "stocks": ["AAPL", "TSLA", "NVDA", "SPY", "QQQ"],
-    "crypto": ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+    "crypto": ["BTC/USDT", "BTC/USDC", "ETH/USDT", "ETH/USDC", "SOL/USDT", "SOL/USDC"]
   },
   "strategies": {
     "first_candle":    { "enabled": true,  "orb_window_minutes": 60,

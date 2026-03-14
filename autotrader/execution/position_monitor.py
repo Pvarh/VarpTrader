@@ -141,7 +141,14 @@ class PositionMonitor:
 
             # 3. Check stop-loss
             sl_hit: bool = False
-            if direction == "long" and current_price <= stop_loss:
+            if not stop_loss or stop_loss <= 0:
+                logger.warning(
+                    "invalid_stop_loss | trade_id={trade_id} symbol={symbol} stop_loss={stop_loss}",
+                    trade_id=trade_id,
+                    symbol=symbol,
+                    stop_loss=stop_loss,
+                )
+            elif direction == "long" and current_price <= stop_loss:
                 sl_hit = True
             elif direction == "short" and current_price >= stop_loss:
                 sl_hit = True

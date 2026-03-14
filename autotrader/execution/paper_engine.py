@@ -469,6 +469,7 @@ class PaperExecutor:
 
         stop_loss = kwargs.get("stop_loss", 0.0)
         take_profit = kwargs.get("take_profit", 0.0)
+        whale_flag = kwargs.get("whale_flag", 0)
 
         try:
             # Journal the trade entry
@@ -481,6 +482,7 @@ class PaperExecutor:
                 quantity=quantity,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                whale_flag=whale_flag,
                 timestamp=now_iso,
                 paper_trade=1,
             )

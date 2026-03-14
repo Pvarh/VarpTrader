@@ -657,7 +657,11 @@ class AutoTrader:
                 symbol=symbol, side=side, quantity=float(quantity),
                 market_price=result.entry_price, market=market,
                 strategy=result.strategy_name,
+                stop_loss=result.stop_loss,
+                take_profit=result.take_profit,
+                whale_flag=whale_flag,
             )
+            trade_id = order_result.get("trade_id") if order_result else None
         else:
             if market == "stock":
                 order_result = self.stock_executor.submit_market_order(
@@ -668,24 +672,31 @@ class AutoTrader:
                     symbol, side, float(quantity)
                 )
 
-        trade = Trade(
-            symbol=symbol,
-            market=market,
-            strategy=result.strategy_name,
-            direction=result.direction.value,
-            entry_price=result.entry_price,
-            quantity=quantity,
-            stop_loss=result.stop_loss,
-            take_profit=result.take_profit,
-            whale_flag=whale_flag,
-            paper_trade=1 if self.paper_trade else 0,
-        )
-        trade_id = self.db.insert_trade(trade)
+            trade = Trade(
+                symbol=symbol,
+                market=market,
+                strategy=result.strategy_name,
+                direction=result.direction.value,
+                entry_price=result.entry_price,
+                quantity=quantity,
+                stop_loss=result.stop_loss,
+                take_profit=result.take_profit,
+                whale_flag=whale_flag,
+                paper_trade=0,
+            )
+            trade_id = self.db.insert_trade(trade)
+
         self._daily_trade_count += 1
 
-        alert_data = trade.to_dict()
-        alert_data["action"] = "ENTRY"
-        alert_data["trade_id"] = trade_id
+        alert_data = {
+            "action": "ENTRY",
+            "trade_id": trade_id,
+            "symbol": symbol,
+            "direction": result.direction.value,
+            "price": result.entry_price,
+            "quantity": quantity,
+            "strategy": result.strategy_name,
+        }
         self.telegram.send_trade_alert(alert_data)
 
         logger.info(

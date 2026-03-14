@@ -288,7 +288,10 @@ class AutoTrader:
             self.telegram.send_kill_switch_alert()
             return
 
-        positions = self.stock_executor.get_positions()
+        if self.paper_trade and self.paper_executor:
+            positions = self.paper_executor.get_positions()
+        else:
+            positions = self.stock_executor.get_positions()
         current_positions = len(positions) if positions else 0
 
         for symbol in self.config["watchlist"]["stocks"]:
@@ -400,7 +403,10 @@ class AutoTrader:
             self.telegram.send_kill_switch_alert()
             return
 
-        crypto_positions = self.crypto_executor.get_positions()
+        if self.paper_trade and self.paper_executor:
+            crypto_positions = self.paper_executor.get_positions()
+        else:
+            crypto_positions = self.crypto_executor.get_positions()
         current_positions = len(crypto_positions) if crypto_positions else 0
 
         for symbol in self.config["watchlist"]["crypto"]:
@@ -641,6 +647,7 @@ class AutoTrader:
 
         open_trades = self.db.get_open_trades()
         open_symbols = {t["symbol"] for t in open_trades} if open_trades else set()
+        current_positions = len(open_trades)
 
         valid, reason = self.order_validator.validate(
             symbol, side, quantity, current_positions,

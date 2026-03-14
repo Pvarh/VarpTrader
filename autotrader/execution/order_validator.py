@@ -125,8 +125,8 @@ class OrderValidator:
             )
             return False, reason
 
-        # 4. Max positions (only applies to new entries, i.e. buys)
-        if direction.lower() == "buy" and current_positions >= self._max_positions:
+        # 4. Max positions (applies to all new entries)
+        if current_positions >= self._max_positions:
             reason = (
                 f"Maximum positions reached ({current_positions}/"
                 f"{self._max_positions})"
@@ -143,7 +143,7 @@ class OrderValidator:
             return False, reason
 
         # 5. Duplicate symbol (don't open a second position for same symbol)
-        if direction.lower() == "buy" and open_symbols and symbol in open_symbols:
+        if open_symbols and symbol in open_symbols:
             reason = f"Duplicate position -- {symbol} already has an open trade"
             logger.warning(
                 "order_rejected_duplicate_position | symbol={symbol}",

@@ -48,6 +48,7 @@ class BlockTradeDetector:
         self._flag_duration: int = flag_ttl_minutes * 60  # seconds
         self._buy_flags: dict[str, float] = {}   # symbol -> expiry timestamp
         self._sell_flags: dict[str, float] = {}  # symbol -> expiry timestamp
+        self._api_disabled: bool = False  # set True on 401/403 to stop spamming
 
         logger.info(
             "block_trade_detector_initialised | stock_block_shares={stock_block_shares} stock_block_usd={stock_block_usd} flag_ttl_minutes={flag_ttl_minutes}",
@@ -73,6 +74,12 @@ class BlockTradeDetector:
         """
         self._cleanup_expired()
 
+        if self._api_disabled:
+            return
+
+        if not self._api_key:
+            return
+
         for symbol in symbols:
             url = (
                 f"{self._POLYGON_BASE}/v3/trades/{symbol}"
@@ -80,6 +87,13 @@ class BlockTradeDetector:
             )
             try:
                 response = requests.get(url, timeout=10)
+                if response.status_code in (401, 403):
+                    logger.warning(
+                        "block_trade_api_auth_failed | status={status} -- disabling block trade polling (Polygon free tier does not support /v3/trades). Whale stock monitoring will be inactive.",
+                        status=response.status_code,
+                    )
+                    self._api_disabled = True
+                    return
                 response.raise_for_status()
                 data: dict[str, Any] = response.json()
                 results: list[dict[str, Any]] = data.get("results", [])

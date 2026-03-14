@@ -214,47 +214,48 @@ class CryptoExecutor:
             return None
 
     # ------------------------------------------------------------------
-    # Positions
+    # Positions (spot balances as proxy)
     # ------------------------------------------------------------------
-    def get_positions(
-        self,
-        symbol: str | None = None,
-    ) -> list[dict[str, Any]]:
-        """Get open positions (futures / margin exchanges).
+    _STABLECOINS: set[str] = {"USDC", "USDT", "BUSD", "BNB"}
 
-        Parameters
-        ----------
-        symbol:
-            Optional trading pair to filter by.  When *None*, all open
-            positions are returned.
+    def get_positions(self) -> list[dict[str, Any]]:
+        """Return non-stablecoin spot balances as open positions.
+
+        Since we only do spot trading, any coin balance with
+        ``total > 0`` (excluding stablecoins) represents an open
+        position.
 
         Returns
         -------
         list[dict]
-            List of CCXT unified position structures.  Returns an empty
-            list on error or when the exchange does not support
-            position queries.
+            Each dict contains ``currency``, ``free``, ``used``, and
+            ``total`` keys.  Returns an empty list on error.
         """
         try:
-            symbols: list[str] | None = [symbol] if symbol else None
-            positions: list[dict[str, Any]] = (
-                self._exchange.fetch_positions(symbols=symbols)
-            )
+            balance: dict[str, Any] = self._exchange.fetch_balance()
+            totals = balance.get("total", {})
+            frees = balance.get("free", {})
+            useds = balance.get("used", {})
 
-            # Filter to positions with a non-zero size
-            active: list[dict[str, Any]] = [
-                p for p in positions
-                if float(p.get("contracts", 0) or 0) != 0
-            ]
+            positions: list[dict[str, Any]] = []
+            for coin, total in totals.items():
+                total_f = float(total or 0)
+                if total_f > 0 and coin not in self._STABLECOINS:
+                    positions.append({
+                        "currency": coin,
+                        "free": float(frees.get(coin, 0) or 0),
+                        "used": float(useds.get(coin, 0) or 0),
+                        "total": total_f,
+                    })
 
-            logger.info("positions_fetched | symbol={symbol} count={count}", symbol=symbol, count=len(active))
-            return active
+            logger.info("spot_positions_fetched | count={count}", count=len(positions))
+            return positions
 
         except ccxt.BaseError:
-            logger.exception("get_positions_ccxt_error | symbol={symbol}", symbol=symbol)
+            logger.exception("get_positions_ccxt_error")
             return []
         except Exception:
-            logger.exception("get_positions_error | symbol={symbol}", symbol=symbol)
+            logger.exception("get_positions_error")
             return []
 
     # ------------------------------------------------------------------
@@ -266,20 +267,16 @@ class CryptoExecutor:
         side: str,
         amount: float,
     ) -> dict[str, Any] | None:
-        """Close (or reduce) an open position via a market order.
-
-        To fully close a long position, pass ``side="sell"`` with the
-        full position size.  To close a short, pass ``side="buy"``.
+        """Close a spot position via a market sell order.
 
         Parameters
         ----------
         symbol:
             Trading pair (e.g. ``"BTC/USDT"``).
         side:
-            ``"buy"`` (to close a short) or ``"sell"`` (to close a
-            long).
+            ``"buy"`` or ``"sell"``.
         amount:
-            Quantity to close.
+            Quantity to trade.
 
         Returns
         -------
@@ -292,7 +289,6 @@ class CryptoExecutor:
                 type="market",
                 side=side.lower(),
                 amount=amount,
-                params={"reduceOnly": True},
             )
             logger.info(
                 "position_closed | symbol={symbol} side={side} amount={amount} order_id={order_id} status={status}",

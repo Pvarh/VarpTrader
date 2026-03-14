@@ -131,6 +131,7 @@ class PositionMonitor:
             # 2. Trailing stop: tighten to breakeven when > 50 % to target
             stop_loss = self._apply_trailing_stop(
                 trade_id=trade_id,
+                symbol=symbol,
                 direction=direction,
                 entry_price=entry_price,
                 stop_loss=stop_loss,
@@ -226,6 +227,7 @@ class PositionMonitor:
     def _apply_trailing_stop(
         self,
         trade_id: int,
+        symbol: str,
         direction: str,
         entry_price: float,
         stop_loss: float,
@@ -276,6 +278,13 @@ class PositionMonitor:
             self._trailing_stop_adjusted.add(trade_id)
             logger.info(
                 "trailing_stop_tightened | trade_id={trade_id} old_stop={old_stop} new_stop={new_stop} progress_pct={progress_pct}",
+                trade_id=trade_id,
+                old_stop=stop_loss,
+                new_stop=entry_price,
+                progress_pct=round(progress * 100, 1),
+            )
+            self._telegram.send_trailing_stop_alert(
+                symbol=symbol,
                 trade_id=trade_id,
                 old_stop=stop_loss,
                 new_stop=entry_price,

@@ -199,3 +199,147 @@ class TelegramAlert:
             "Manual review required before resuming operations."
         )
         return self.send_message(text)
+
+    # ------------------------------------------------------------------
+    # Whale / on-chain alert
+    # ------------------------------------------------------------------
+    def send_whale_alert(
+        self,
+        symbol: str,
+        direction: str,
+        amount_usd: float,
+        tx_hash: str | None = None,
+    ) -> bool:
+        """Send a whale movement notification.
+
+        Parameters
+        ----------
+        symbol:
+            Cryptocurrency symbol (e.g. ``"BTC"``).
+        direction:
+            ``"sell_pressure"`` or ``"accumulation"``.
+        amount_usd:
+            USD value of the transfer.
+        tx_hash:
+            Optional on-chain transaction hash.
+
+        Returns
+        -------
+        bool
+            ``True`` if the alert was delivered successfully.
+        """
+        emoji = "sell pressure" if "sell" in direction.lower() else "accumulation"
+        timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines: list[str] = [
+            f"*WHALE ALERT* | {symbol}",
+            f"Type: {emoji}",
+            f"Value: ${amount_usd:,.0f}",
+        ]
+        if tx_hash:
+            lines.append(f"TX: `{tx_hash[:16]}...`")
+        lines.append(f"Time: {timestamp}")
+        return self.send_message("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # Signal triggered (informational)
+    # ------------------------------------------------------------------
+    def send_signal_alert(
+        self,
+        symbol: str,
+        strategy: str,
+        direction: str,
+        entry: float,
+        stop_loss: float,
+        take_profit: float,
+        action: str = "TRIGGERED",
+    ) -> bool:
+        """Send a signal notification (triggered, rejected, or suppressed).
+
+        Parameters
+        ----------
+        symbol:
+            Instrument symbol.
+        strategy:
+            Strategy name that produced the signal.
+        direction:
+            ``"LONG"`` or ``"SHORT"``.
+        entry / stop_loss / take_profit:
+            Price levels for the signal.
+        action:
+            Label such as ``"TRIGGERED"``, ``"REJECTED"``, or
+            ``"SUPPRESSED"``.
+
+        Returns
+        -------
+        bool
+            ``True`` if the alert was delivered successfully.
+        """
+        timestamp = datetime.now(tz=timezone.utc).strftime("%H:%M UTC")
+        rr = "N/A"
+        risk = abs(entry - stop_loss)
+        if risk > 0:
+            reward = abs(take_profit - entry)
+            rr = f"{reward / risk:.1f}:1"
+
+        text = (
+            f"*{action}* | {symbol}\n"
+            f"Strategy: {strategy}\n"
+            f"Direction: {direction}\n"
+            f"Entry: {entry:.4f}\n"
+            f"SL: {stop_loss:.4f} | TP: {take_profit:.4f}\n"
+            f"R:R: {rr}\n"
+            f"Time: {timestamp}"
+        )
+        return self.send_message(text)
+
+    # ------------------------------------------------------------------
+    # Trailing stop notification
+    # ------------------------------------------------------------------
+    def send_trailing_stop_alert(
+        self,
+        symbol: str,
+        trade_id: int,
+        old_stop: float,
+        new_stop: float,
+        progress_pct: float,
+    ) -> bool:
+        """Notify that trailing stop was tightened to breakeven.
+
+        Returns
+        -------
+        bool
+            ``True`` if the alert was delivered successfully.
+        """
+        text = (
+            f"*TRAILING STOP* | {symbol}\n"
+            f"Trade #{trade_id}\n"
+            f"Stop moved: {old_stop:.4f} -> {new_stop:.4f} (breakeven)\n"
+            f"Progress to TP: {progress_pct:.0f}%"
+        )
+        return self.send_message(text)
+
+    # ------------------------------------------------------------------
+    # Error notification
+    # ------------------------------------------------------------------
+    def send_error_alert(self, component: str, error_msg: str) -> bool:
+        """Send a critical error notification.
+
+        Parameters
+        ----------
+        component:
+            System component where the error occurred.
+        error_msg:
+            Short error description.
+
+        Returns
+        -------
+        bool
+            ``True`` if the alert was delivered successfully.
+        """
+        timestamp = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        text = (
+            f"*ERROR* | {component}\n"
+            f"{error_msg}\n"
+            f"Time: {timestamp}"
+        )
+        return self.send_message(text)

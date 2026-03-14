@@ -269,8 +269,16 @@ class StockFeed:
                 date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
             ticker = yf.Ticker(symbol)
-            df = ticker.history(start=date, interval="15m")
-            if df is None or df.empty:
+            try:
+                df = ticker.history(start=date, interval="15m")
+            except Exception:
+                logger.warning(
+                    "first_candle_fetch_failed | symbol={symbol} date={date}",
+                    symbol=symbol,
+                    date=date,
+                )
+                return None
+            if df is None or not hasattr(df, "empty") or df.empty or len(df) == 0:
                 logger.warning(
                     "no_first_candle_data | symbol={symbol} date={date}",
                     symbol=symbol,

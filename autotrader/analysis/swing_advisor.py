@@ -411,7 +411,7 @@ class SwingAdvisor:
 
             generated_at = data.get("generated_at", "")
             if not generated_at:
-                logger.warning("weekly_bias_no_timestamp")
+                logger.debug("weekly_bias_no_timestamp -- awaiting first advisor run")
                 return {"week_start": "", "generated_at": "", "biases": {}}
 
             gen_dt = datetime.fromisoformat(generated_at)

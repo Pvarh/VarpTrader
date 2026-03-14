@@ -188,6 +188,7 @@ class AutoTrader:
             bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
             chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         )
+        self.onchain_detector._telegram = self.telegram
 
         # -- Analysis --------------------------------------------------------
         self.analyzer = PerformanceAnalyzer(self.db)
@@ -419,8 +420,11 @@ class AutoTrader:
 
         whale_flag = 0
         if self.onchain_detector.has_sell_pressure(base_symbol):
-            logger.info("onchain_sell_pressure | symbol={}", symbol)
-            whale_flag = 1
+            logger.info(
+                "onchain_sell_pressure | symbol={} -- skipping, other symbols unaffected",
+                symbol,
+            )
+            return
 
         for sig in self.signals:
             if not sig.is_enabled():
@@ -433,19 +437,9 @@ class AutoTrader:
                 if not result.triggered:
                     continue
 
-                if (
-                    result.direction == SignalDirection.LONG
-                    and self.onchain_detector.has_sell_pressure(base_symbol)
-                ):
-                    logger.info(
-                        "whale_suppressed_long_crypto | symbol={} strategy={}",
-                        symbol, sig.name,
-                    )
-                    continue
-
                 self._process_signal(
                     result, symbol, "crypto", account_value,
-                    current_positions, whale_flag,
+                    current_positions, 0,
                 )
             except Exception:
                 logger.exception(
@@ -607,6 +601,15 @@ class AutoTrader:
             logger.info(
                 "reward_ratio_rejected | symbol={} strategy={}",
                 symbol, result.strategy_name,
+            )
+            self.telegram.send_signal_alert(
+                symbol=symbol,
+                strategy=result.strategy_name,
+                direction=result.direction.value.upper(),
+                entry=result.entry_price,
+                stop_loss=result.stop_loss,
+                take_profit=result.take_profit,
+                action="REJECTED (R:R)",
             )
             return
 
@@ -917,11 +920,16 @@ def run_live(args) -> None:
     mode = "PAPER" if trader.paper_trade else "LIVE"
     stocks = trader.config.get("watchlist", {}).get("stocks", [])
     crypto = trader.config.get("watchlist", {}).get("crypto", [])
+    dashboard_cfg = trader.config.get("dashboard", {})
+    dash_url = dashboard_cfg.get(
+        "public_url",
+        f"http://{dashboard_cfg.get('host', '0.0.0.0')}:{dashboard_cfg.get('port', 8000)}",
+    )
     trader.telegram.send_message(
         f"VarpTrader started ({mode} mode)\n"
         f"Stocks: {', '.join(stocks)}\n"
         f"Crypto: {', '.join(crypto)}\n"
-        f"Dashboard: http://0.0.0.0:{trader.config.get('dashboard', {}).get('port', 8000)}",
+        f"Dashboard: {dash_url}",
         parse_mode="",
     )
     try:

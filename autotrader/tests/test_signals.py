@@ -800,7 +800,7 @@ class TestBollingerFade:
         )
         assert result.triggered is True
         assert result.direction == SignalDirection.LONG
-        assert result.take_profit == pytest.approx(100.0, rel=1e-2)  # midline
+        assert result.take_profit == pytest.approx(98.475, rel=1e-2)  # 2:1 R:R
 
     def test_short_signal_upper_band_touch(self, config: dict) -> None:
         """SELL when price touches upper band + RSI > 65 + prev candle bullish."""
@@ -815,7 +815,7 @@ class TestBollingerFade:
         )
         assert result.triggered is True
         assert result.direction == SignalDirection.SHORT
-        assert result.take_profit == pytest.approx(100.0, rel=1e-2)
+        assert result.take_profit == pytest.approx(101.475, rel=1e-2)  # 2:1 R:R
 
     def test_no_signal_when_rsi_not_extreme(self, config: dict) -> None:
         """No signal if RSI is in a moderate range."""

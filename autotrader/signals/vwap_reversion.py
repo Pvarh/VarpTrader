@@ -203,10 +203,10 @@ class VWAPReversionSignal(BaseSignal):
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
-            take_profit = vwap  # target the VWAP itself
+            take_profit = entry_price + (entry_price - stop_loss) * 2.0
         else:
             stop_loss = entry_price + stop_distance
-            take_profit = vwap  # target the VWAP itself
+            take_profit = entry_price - (stop_loss - entry_price) * 2.0
 
         logger.info(
             "signal_triggered | signal={signal} symbol={symbol} "

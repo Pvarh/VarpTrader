@@ -31,17 +31,17 @@ class TestPositionSizer:
 
         sizer = PositionSizer(config["risk"])
         account_value = 100_000.0
-        # Use a higher entry price so the notional cap doesn't flatten both results
+        # Use a lower entry price so the 10% value cap doesn't flatten both results
         size_low_vol = sizer.calculate_size(
-            account_value=account_value, entry_price=500.0, atr=5.0,
+            account_value=account_value, entry_price=50.0, atr=5.0,
         )
         size_high_vol = sizer.calculate_size(
-            account_value=account_value, entry_price=500.0, atr=50.0,
+            account_value=account_value, entry_price=50.0, atr=50.0,
         )
         assert size_high_vol < size_low_vol
 
     def test_position_size_respects_max_pct(self, config: dict) -> None:
-        """Position notional should never exceed total account equity."""
+        """Position notional should never exceed 10% of account value."""
         from risk.position_sizer import PositionSizer
 
         sizer = PositionSizer(config["risk"])
@@ -50,7 +50,7 @@ class TestPositionSizer:
         size = sizer.calculate_size(
             account_value=account_value, entry_price=entry_price, atr=0.01,
         )
-        assert size * entry_price <= account_value
+        assert size * entry_price <= account_value * 0.10
 
     def test_zero_atr_returns_safe_default(self, config: dict) -> None:
         """ATR=0 should not cause division by zero; return a safe value."""

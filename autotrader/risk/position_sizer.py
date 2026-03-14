@@ -71,7 +71,7 @@ class PositionSizer:
            is zero/negative, ``stop_loss_pct * entry_price``.
         3. ``position_size = max_risk_amount / risk_per_unit``
         4. Cap the result so the notional value never exceeds
-           ``max_risk_amount`` (i.e. ``position_size <= max_risk_amount / entry_price``).
+           10 % of account value.
         5. Return at least 1.
         """
         max_risk_amount: float = account_value * self._position_size_pct
@@ -95,15 +95,17 @@ class PositionSizer:
 
         position_size: float = max_risk_amount / risk_per_unit
 
-        # Cap so total position notional does not exceed account equity
-        max_units_by_equity: float = account_value / entry_price
-        if position_size > max_units_by_equity:
+        # Cap so total position value does not exceed 10% of account
+        max_position_value: float = account_value * 0.10
+        max_qty_by_value: float = max_position_value / entry_price
+        if position_size > max_qty_by_value:
             logger.debug(
-                "position_capped_by_equity | raw_size={raw_size} capped_size={capped_size}",
+                "position_capped_by_value | raw_size={raw_size} max_value={max_value} capped_size={capped_size}",
                 raw_size=position_size,
-                capped_size=max_units_by_equity,
+                max_value=max_position_value,
+                capped_size=max_qty_by_value,
             )
-            position_size = max_units_by_equity
+            position_size = max_qty_by_value
 
         # Guarantee at least 1 unit
         final_size: int = max(1, int(position_size))

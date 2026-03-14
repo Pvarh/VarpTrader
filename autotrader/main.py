@@ -639,9 +639,13 @@ class AutoTrader:
 
         side = "buy" if result.direction == SignalDirection.LONG else "sell"
 
+        open_trades = self.db.get_open_trades()
+        open_symbols = {t["symbol"] for t in open_trades} if open_trades else set()
+
         valid, reason = self.order_validator.validate(
             symbol, side, quantity, current_positions,
             self._daily_trade_count, self.kill_switch.halted,
+            open_symbols=open_symbols,
         )
         if not valid:
             logger.info("order_rejected | symbol={} reason={}", symbol, reason)

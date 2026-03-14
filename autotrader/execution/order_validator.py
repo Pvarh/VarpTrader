@@ -50,6 +50,7 @@ class OrderValidator:
         current_positions: int,
         daily_trade_count: int,
         kill_switch_active: bool,
+        open_symbols: set[str] | None = None,
     ) -> tuple[bool, str]:
         """Run all pre-flight checks on an intended order.
 
@@ -67,6 +68,10 @@ class OrderValidator:
             How many trades have already been executed today.
         kill_switch_active:
             Whether the daily-loss kill switch is engaged.
+        open_symbols:
+            Set of symbols that already have open positions.
+            When provided, duplicate entries for the same symbol
+            are rejected.
 
         Returns
         -------
@@ -137,7 +142,16 @@ class OrderValidator:
             )
             return False, reason
 
-        # 5. Max daily trades
+        # 5. Duplicate symbol (don't open a second position for same symbol)
+        if direction.lower() == "buy" and open_symbols and symbol in open_symbols:
+            reason = f"Duplicate position -- {symbol} already has an open trade"
+            logger.warning(
+                "order_rejected_duplicate_position | symbol={symbol}",
+                symbol=symbol,
+            )
+            return False, reason
+
+        # 6. Max daily trades
         if daily_trade_count >= self._max_daily_trades:
             reason = (
                 f"Maximum daily trades reached ({daily_trade_count}/"

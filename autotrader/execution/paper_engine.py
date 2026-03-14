@@ -386,6 +386,8 @@ class PaperExecutor:
         self._db: TradeDatabase = db
         self._slippage_pct: float = slippage_pct
 
+        self._reload_open_positions()
+
         logger.info(
             "paper_executor_initialised | initial_capital={initial_capital} slippage_pct={slippage_pct}",
             initial_capital=portfolio.initial_capital,
@@ -393,6 +395,48 @@ class PaperExecutor:
         )
 
     # ----- helpers ---------------------------------------------------
+
+    def _reload_open_positions(self) -> None:
+        """Restore open positions from the DB so RAM matches disk after restart."""
+        try:
+            open_trades = self._db.get_open_trades()
+            if not open_trades:
+                return
+            restored = 0
+            for t in open_trades:
+                if not t.get("paper_trade", 0):
+                    continue
+                symbol = t["symbol"]
+                if self._portfolio.has_position(symbol):
+                    continue
+                cost = abs(t["quantity"]) * t["entry_price"]
+                with self._portfolio._lock:
+                    if cost > self._portfolio._cash:
+                        logger.warning(
+                            "paper_reload_skip_insufficient_cash | symbol={symbol} cost={cost} cash={cash}",
+                            symbol=symbol, cost=cost, cash=self._portfolio._cash,
+                        )
+                        continue
+                    self._portfolio._cash -= cost
+                    pos = PaperPosition(
+                        symbol=symbol,
+                        market=t.get("market", "crypto"),
+                        side=t["direction"],
+                        quantity=abs(t["quantity"]),
+                        entry_price=t["entry_price"],
+                        current_price=t["entry_price"],
+                        timestamp=t.get("timestamp", ""),
+                        trade_id=t.get("id"),
+                    )
+                    self._portfolio._positions[symbol] = pos
+                    restored += 1
+            if restored:
+                logger.info(
+                    "paper_positions_reloaded | count={count} cash_remaining={cash}",
+                    count=restored, cash=self._portfolio.cash,
+                )
+        except Exception:
+            logger.exception("paper_reload_error")
 
     def _apply_slippage(self, price: float, side: str) -> float:
         """Apply simulated slippage to a price.

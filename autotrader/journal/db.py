@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS trades (
     market_condition TEXT,
     paper_trade INTEGER DEFAULT 0,
     swing_bias TEXT,
-    swing_confidence INTEGER
+    swing_confidence INTEGER,
+    exit_timestamp TEXT
 );
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
@@ -94,10 +95,20 @@ class TradeDatabase:
             raise
 
     def _init_schema(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist and run migrations."""
         conn = self._get_connection()
         conn.executescript(SCHEMA_SQL)
         conn.commit()
+        self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Run schema migrations for existing databases."""
+        cur = conn.execute("PRAGMA table_info(trades)")
+        columns = {row[1] for row in cur.fetchall()}
+        if "exit_timestamp" not in columns:
+            conn.execute("ALTER TABLE trades ADD COLUMN exit_timestamp TEXT")
+            conn.commit()
+            logger.info("migration_applied | added exit_timestamp column")
 
     def insert_trade(self, trade: Trade) -> int:
         """Insert a new trade record.
@@ -147,13 +158,17 @@ class TradeDatabase:
             pnl_pct: Realized profit/loss as a percentage.
             outcome: Trade outcome ('win', 'loss', 'breakeven').
         """
+        from datetime import datetime, timezone
+
+        exit_ts = datetime.now(timezone.utc).isoformat()
         sql = """
             UPDATE trades
-            SET exit_price = ?, pnl = ?, pnl_pct = ?, outcome = ?
+            SET exit_price = ?, pnl = ?, pnl_pct = ?, outcome = ?,
+                exit_timestamp = ?
             WHERE id = ?
         """
         with self._cursor() as cur:
-            cur.execute(sql, (exit_price, pnl, pnl_pct, outcome, trade_id))
+            cur.execute(sql, (exit_price, pnl, pnl_pct, outcome, exit_ts, trade_id))
         logger.info(
             "trade_exit_updated | trade_id={trade_id} outcome={outcome} pnl={pnl}",
             trade_id=trade_id, outcome=outcome, pnl=pnl,
@@ -202,7 +217,10 @@ class TradeDatabase:
         return [dict(r) for r in rows]
 
     def get_daily_pnl(self, date_str: str) -> float:
-        """Calculate total PnL for a specific date.
+        """Calculate total realized PnL for a specific date.
+
+        Uses exit_timestamp when available (trades closed on that date),
+        falls back to entry timestamp for older records without exit_timestamp.
 
         Args:
             date_str: Date string in YYYY-MM-DD format.
@@ -212,8 +230,13 @@ class TradeDatabase:
         """
         with self._cursor() as cur:
             cur.execute(
-                "SELECT COALESCE(SUM(pnl), 0.0) FROM trades WHERE timestamp LIKE ?",
-                (f"{date_str}%",),
+                """SELECT COALESCE(SUM(pnl), 0.0) FROM trades
+                   WHERE pnl IS NOT NULL
+                   AND (
+                       (exit_timestamp IS NOT NULL AND exit_timestamp LIKE ?)
+                       OR (exit_timestamp IS NULL AND timestamp LIKE ?)
+                   )""",
+                (f"{date_str}%", f"{date_str}%"),
             )
             result = cur.fetchone()
         return result[0] if result else 0.0

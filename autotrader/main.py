@@ -641,9 +641,26 @@ class AutoTrader:
             if candles
             else result.entry_price * 0.01
         )
+        # Determine available cash for position sizing
+        if self.paper_trade and self.paper_portfolio:
+            available_cash = self.paper_portfolio.cash
+        elif market == "stock":
+            account = self.stock_executor.get_account()
+            available_cash = float(account.get("buying_power", 0)) if account else 0.0
+        else:
+            available_cash = account_value  # crypto: account_value already from stablecoin balance
+
         quantity = self.position_sizer.calculate_size(
-            account_value, result.entry_price, atr
+            account_value, result.entry_price, atr,
+            available_cash=available_cash, market=market,
         )
+
+        if quantity <= 0:
+            logger.warning(
+                "order_rejected_insufficient_cash | symbol={} cash={} price={}",
+                symbol, round(available_cash, 2), result.entry_price,
+            )
+            return
 
         side = "buy" if result.direction == SignalDirection.LONG else "sell"
 

@@ -62,6 +62,30 @@ class TestPositionSizer:
         )
         assert size > 0
 
+    def test_crypto_fractional_sizing(self, config: dict) -> None:
+        """Crypto should return fractional quantity, not forced to int 1."""
+        from risk.position_sizer import PositionSizer
+
+        sizer = PositionSizer(config["risk"])
+        size = sizer.calculate_size(
+            account_value=100_000.0, entry_price=71_300.0, atr=500.0,
+            available_cash=62_000.0, market="crypto",
+        )
+        # Should be ~0.87 BTC, not 1
+        assert 0.0 < size < 1.0
+        assert size * 71_300.0 <= 62_000.0
+
+    def test_cash_cap_prevents_oversizing(self, config: dict) -> None:
+        """Position size must not exceed available cash."""
+        from risk.position_sizer import PositionSizer
+
+        sizer = PositionSizer(config["risk"])
+        size = sizer.calculate_size(
+            account_value=100_000.0, entry_price=50.0, atr=0.5,
+            available_cash=500.0, market="stock",
+        )
+        assert size * 50.0 <= 500.0
+
 
 # ===========================================================================
 # Kill Switch

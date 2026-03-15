@@ -18,6 +18,7 @@ from data.feed_crypto import CryptoFeed
 from data.feed_stocks import StockFeed
 from execution.alpaca_executor import AlpacaExecutor
 from execution.crypto_executor import CryptoExecutor
+from execution.paper_engine import PaperExecutor
 from journal.db import TradeDatabase
 
 
@@ -58,6 +59,7 @@ class PositionMonitor:
         crypto_executor: CryptoExecutor,
         telegram: TelegramAlert,
         paper_trade: bool = True,
+        paper_executor: PaperExecutor | None = None,
     ) -> None:
         """Initialize with all required dependencies."""
         self._db: TradeDatabase = db
@@ -67,6 +69,7 @@ class PositionMonitor:
         self._crypto_executor: CryptoExecutor = crypto_executor
         self._telegram: TelegramAlert = telegram
         self._paper_trade: bool = paper_trade
+        self._paper_executor: PaperExecutor | None = paper_executor
 
         # Track trade IDs whose stops have already been tightened to
         # breakeven so the adjustment only happens once per trade.
@@ -363,6 +366,16 @@ class PositionMonitor:
                 order=order_result,
             )
         else:
+            # Paper trade: remove RAM position and credit cash back
+            if self._paper_executor:
+                try:
+                    self._paper_executor._portfolio.close_position(symbol, exit_price)
+                except KeyError:
+                    logger.debug(
+                        "paper_ram_position_already_gone | trade_id={trade_id} symbol={symbol}",
+                        trade_id=trade_id,
+                        symbol=symbol,
+                    )
             logger.info(
                 "paper_trade_close | trade_id={trade_id} symbol={symbol} reason={reason} exit_price={exit_price}",
                 trade_id=trade_id,

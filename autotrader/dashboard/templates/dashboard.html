@@ -221,10 +221,8 @@
     }
 
     /* ================================================================
-       WebSocket: live dashboard updates
+       WebSocket: live dashboard updates (via base.html ws)
        ================================================================ */
-    let pnlSocket = null;
-    let reconnectAttempts = 0;
 
     function formatUptime(sec) {
         const h = Math.floor(sec / 3600);
@@ -233,108 +231,83 @@
         return m + 'm';
     }
 
-    function connectPnlWebSocket() {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = protocol + '//' + window.location.host + '/ws/pnl';
-        const statusEl = document.getElementById('wsStatus');
+    window.onPnlUpdate = function(data) {
+        if (data.type !== 'pnl_update') return;
 
-        pnlSocket = new WebSocket(wsUrl);
+        // Daily PnL
+        const pnlEl = document.getElementById('dailyPnl');
+        const pnl = data.daily_pnl;
+        pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
+        pnlEl.className = 'value ' + (pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-zero');
 
-        pnlSocket.onopen = function() {
-            reconnectAttempts = 0;
-            if (statusEl) { statusEl.textContent = 'live'; statusEl.className = 'nav-status nav-status-ok'; }
-        };
+        // Open positions count
+        document.getElementById('openPositions').textContent = data.open_positions;
 
-        pnlSocket.onmessage = function(event) {
-            const data = JSON.parse(event.data);
-            if (data.type !== 'pnl_update') return;
+        // Kill switch
+        const ksCard = document.getElementById('killSwitchCard');
+        const ksIndicator = document.getElementById('ksIndicator');
+        const ksText = document.getElementById('ksText');
+        if (data.kill_switch_active) {
+            ksCard.className = 'status-card card-danger';
+            ksIndicator.className = 'indicator indicator-red';
+            ksText.textContent = 'HALTED';
+        } else {
+            ksCard.className = 'status-card';
+            ksIndicator.className = 'indicator indicator-green';
+            ksText.textContent = 'OK';
+        }
 
-            // Daily PnL
-            const pnlEl = document.getElementById('dailyPnl');
-            const pnl = data.daily_pnl;
-            pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
-            pnlEl.className = 'value ' + (pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-zero');
+        // Uptime
+        if (data.uptime_seconds) {
+            document.getElementById('uptime').textContent = formatUptime(data.uptime_seconds);
+        }
 
-            // Open positions count
-            document.getElementById('openPositions').textContent = data.open_positions;
-
-            // Kill switch
-            const ksCard = document.getElementById('killSwitchCard');
-            const ksIndicator = document.getElementById('ksIndicator');
-            const ksText = document.getElementById('ksText');
-            if (data.kill_switch_active) {
-                ksCard.className = 'status-card card-danger';
-                ksIndicator.className = 'indicator indicator-red';
-                ksText.textContent = 'HALTED';
+        // Open trades table
+        if (data.open_trades) {
+            const tbody = document.getElementById('openTradesBody');
+            if (data.open_trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No open positions</td></tr>';
             } else {
-                ksCard.className = 'status-card';
-                ksIndicator.className = 'indicator indicator-green';
-                ksText.textContent = 'OK';
+                tbody.innerHTML = data.open_trades.map(t => `
+                    <tr>
+                        <td><strong>${t.symbol}</strong></td>
+                        <td class="text-muted">${t.strategy}</td>
+                        <td><span class="badge badge-${t.direction}">${t.direction}</span></td>
+                        <td>${Number(t.entry_price).toFixed(4)}</td>
+                        <td>${Number(t.stop_loss).toFixed(4)}</td>
+                        <td>${Number(t.take_profit).toFixed(4)}</td>
+                    </tr>
+                `).join('');
             }
+        }
 
-            // Uptime
-            if (data.uptime_seconds) {
-                document.getElementById('uptime').textContent = formatUptime(data.uptime_seconds);
-            }
-
-            // Open trades table
-            if (data.open_trades) {
-                const tbody = document.getElementById('openTradesBody');
-                if (data.open_trades.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No open positions</td></tr>';
-                } else {
-                    tbody.innerHTML = data.open_trades.map(t => `
+        // Recent trades table
+        if (data.recent_trades) {
+            const tbody = document.getElementById('recentTradesBody');
+            if (data.recent_trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No recent trades</td></tr>';
+            } else {
+                tbody.innerHTML = data.recent_trades.map(t => {
+                    const pnl = t.pnl;
+                    const pnlClass = pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-zero';
+                    const pnlText = pnl != null ? ((pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)) : '--';
+                    const outcome = t.outcome || 'open';
+                    return `
                         <tr>
                             <td><strong>${t.symbol}</strong></td>
                             <td class="text-muted">${t.strategy}</td>
                             <td><span class="badge badge-${t.direction}">${t.direction}</span></td>
-                            <td>${Number(t.entry_price).toFixed(4)}</td>
-                            <td>${Number(t.stop_loss).toFixed(4)}</td>
-                            <td>${Number(t.take_profit).toFixed(4)}</td>
+                            <td class="${pnlClass}">${pnlText}</td>
+                            <td><span class="badge badge-${outcome}">${outcome}</span></td>
                         </tr>
-                    `).join('');
-                }
+                    `;
+                }).join('');
             }
-
-            // Recent trades table
-            if (data.recent_trades) {
-                const tbody = document.getElementById('recentTradesBody');
-                if (data.recent_trades.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No recent trades</td></tr>';
-                } else {
-                    tbody.innerHTML = data.recent_trades.map(t => {
-                        const pnl = t.pnl;
-                        const pnlClass = pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-zero';
-                        const pnlText = pnl != null ? ((pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2)) : '--';
-                        const outcome = t.outcome || 'open';
-                        return `
-                            <tr>
-                                <td><strong>${t.symbol}</strong></td>
-                                <td class="text-muted">${t.strategy}</td>
-                                <td><span class="badge badge-${t.direction}">${t.direction}</span></td>
-                                <td class="${pnlClass}">${pnlText}</td>
-                                <td><span class="badge badge-${outcome}">${outcome}</span></td>
-                            </tr>
-                        `;
-                    }).join('');
-                }
-            }
-        };
-
-        pnlSocket.onclose = function() {
-            if (statusEl) { statusEl.textContent = 'reconnecting...'; statusEl.className = 'nav-status'; }
-            reconnectAttempts++;
-            setTimeout(connectPnlWebSocket, Math.min(1000 * Math.pow(2, reconnectAttempts), 30000));
-        };
-
-        pnlSocket.onerror = function() {
-            if (statusEl) { statusEl.textContent = 'error'; statusEl.className = 'nav-status nav-status-err'; }
-        };
-    }
+        }
+    };
 
     document.addEventListener('DOMContentLoaded', function() {
         renderEquityChart();
-        connectPnlWebSocket();
     });
 </script>
 {% endblock %}

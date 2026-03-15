@@ -28,6 +28,40 @@
     {% block content %}{% endblock %}
 </main>
 
+<!-- Base WebSocket for connection status indicator -->
+<script>
+(function() {
+    var statusEl = document.getElementById('wsStatus');
+    var reconnect = 0;
+
+    function connectStatusWs() {
+        var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var ws = new WebSocket(proto + '//' + location.host + '/ws/pnl');
+
+        ws.onopen = function() {
+            reconnect = 0;
+            if (statusEl) { statusEl.textContent = 'live'; statusEl.className = 'nav-status nav-status-ok'; }
+        };
+        ws.onmessage = function(event) {
+            /* Dispatch to page-level handler if defined */
+            if (window.onPnlUpdate) {
+                try { window.onPnlUpdate(JSON.parse(event.data)); } catch(e) {}
+            }
+        };
+        ws.onclose = function() {
+            if (statusEl) { statusEl.textContent = 'reconnecting...'; statusEl.className = 'nav-status'; }
+            reconnect++;
+            setTimeout(connectStatusWs, Math.min(1000 * Math.pow(2, reconnect), 30000));
+        };
+        ws.onerror = function() {
+            if (statusEl) { statusEl.textContent = 'error'; statusEl.className = 'nav-status nav-status-err'; }
+        };
+    }
+
+    document.addEventListener('DOMContentLoaded', connectStatusWs);
+})();
+</script>
+
 {% block scripts %}{% endblock %}
 
 </body>

@@ -218,6 +218,7 @@ class AutoTrader:
             crypto_executor=self.crypto_executor,
             telegram=self.telegram,
             paper_trade=self.paper_trade,
+            paper_executor=self.paper_executor,
         )
 
         # -- Trade lifecycle -------------------------------------------------
@@ -668,7 +669,13 @@ class AutoTrader:
                 take_profit=result.take_profit,
                 whale_flag=whale_flag,
             )
-            trade_id = order_result.get("trade_id") if order_result else None
+            if not order_result:
+                logger.warning(
+                    "paper_order_failed | symbol={} strategy={} side={}",
+                    symbol, result.strategy_name, side,
+                )
+                return
+            trade_id = order_result.get("trade_id")
         else:
             if market == "stock":
                 order_result = self.stock_executor.submit_market_order(
@@ -755,6 +762,20 @@ class AutoTrader:
                     "insufficient_trades_for_analysis | count={}",
                     report_data.get("total_trades", 0),
                 )
+                # Still build and send a basic stats report (no AI recommendations)
+                report_md = self.report_builder.build_daily_report(
+                    report_data, config_changes=[], rejected=[],
+                )
+                self.telegram.send_daily_report(report_md)
+
+                from journal.models import AnalysisRun
+
+                run = AnalysisRun(
+                    trades_analyzed=report_data.get("total_trades", 0),
+                    report_markdown=report_md,
+                )
+                self.db.insert_analysis_run(run)
+                logger.info("nightly_basic_report_sent | trades={}", report_data.get("total_trades", 0))
                 return
 
             recommendations = self.llm_advisor.get_recommendations(report_data)

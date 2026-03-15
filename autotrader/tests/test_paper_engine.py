@@ -599,19 +599,22 @@ class TestInsufficientCash:
     def test_partial_capital_then_insufficient(
         self, executor: PaperExecutor, portfolio: PaperPortfolio,
     ) -> None:
-        """After using most capital, next large order should fail."""
+        """After using most capital, next large order should be scaled down."""
         executor.submit_market_order(
             symbol="AAPL", side="buy", quantity=600,
             market_price=150.0, market="stock", strategy="test",
         )
-        # Used ~90k, only ~10k left
+        # Used ~90k, only ~10k left -- order for 100 @ 300 = 30k, scales down
         order = executor.submit_market_order(
             symbol="MSFT", side="buy", quantity=100,
             market_price=300.0, market="stock", strategy="test",
         )
-        assert order is None
+        assert order is not None
         assert portfolio.has_position("AAPL")
-        assert not portfolio.has_position("MSFT")
+        assert portfolio.has_position("MSFT")
+        # Quantity should be scaled down to fit available cash
+        msft_pos = portfolio.get_position("MSFT")
+        assert msft_pos["quantity"] < 100
 
 
 # =====================================================================

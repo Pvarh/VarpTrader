@@ -1,30 +1,47 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}VarpTrader{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: { 900: '#0b0d11', 800: '#13161d', 700: '#1a1e28', 600: '#1e2230' },
+                    }
+                }
+            }
+        }
+    </script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="bg-dark-900 text-gray-300 min-h-screen antialiased">
 
 <!-- Navigation -->
-<nav class="navbar">
-    <div class="nav-left">
-        <a href="/" class="navbar-brand">VarpTrader</a>
-        <span class="nav-status" id="wsStatus">connecting...</span>
+<nav class="bg-dark-800 border-b border-dark-600 px-5 flex items-center justify-between h-12">
+    <div class="flex items-center gap-3">
+        <a href="/" class="text-sm font-bold text-white tracking-tight">VarpTrader</a>
+        <span class="text-[10px] text-gray-500 bg-dark-900 px-2 py-0.5 rounded-full uppercase tracking-wider" id="wsStatus">connecting...</span>
     </div>
-    <ul class="navbar-links">
-        <li><a href="/" class="{% if active_page == 'dashboard' %}active{% endif %}">Dashboard</a></li>
-        <li><a href="/trades" class="{% if active_page == 'trades' %}active{% endif %}">Trades</a></li>
-        <li><a href="/analysis" class="{% if active_page == 'analysis' %}active{% endif %}">Analysis</a></li>
-        <li><a href="/config" class="{% if active_page == 'config' %}active{% endif %}">Config</a></li>
+    <ul class="flex h-12 list-none">
+        <li><a href="/" class="flex items-center px-4 h-full text-xs font-medium border-b-2 transition-colors
+            {% if active_page == 'dashboard' %}text-blue-400 border-blue-400{% else %}text-gray-500 border-transparent hover:text-gray-300{% endif %}">Dashboard</a></li>
+        <li><a href="/trades" class="flex items-center px-4 h-full text-xs font-medium border-b-2 transition-colors
+            {% if active_page == 'trades' %}text-blue-400 border-blue-400{% else %}text-gray-500 border-transparent hover:text-gray-300{% endif %}">Trades</a></li>
+        <li><a href="/analysis" class="flex items-center px-4 h-full text-xs font-medium border-b-2 transition-colors
+            {% if active_page == 'analysis' %}text-blue-400 border-blue-400{% else %}text-gray-500 border-transparent hover:text-gray-300{% endif %}">Analysis</a></li>
+        <li><a href="/config" class="flex items-center px-4 h-full text-xs font-medium border-b-2 transition-colors
+            {% if active_page == 'config' %}text-blue-400 border-blue-400{% else %}text-gray-500 border-transparent hover:text-gray-300{% endif %}">Config</a></li>
     </ul>
 </nav>
 
 <!-- Page Content -->
-<main class="page-content">
+<main class="max-w-[1280px] mx-auto">
     {% block content %}{% endblock %}
 </main>
 
@@ -40,21 +57,29 @@
 
         ws.onopen = function() {
             reconnect = 0;
-            if (statusEl) { statusEl.textContent = 'live'; statusEl.className = 'nav-status nav-status-ok'; }
+            if (statusEl) {
+                statusEl.textContent = 'live';
+                statusEl.className = 'text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider text-green-400 bg-green-400/10';
+            }
         };
         ws.onmessage = function(event) {
-            /* Dispatch to page-level handler if defined */
             if (window.onPnlUpdate) {
                 try { window.onPnlUpdate(JSON.parse(event.data)); } catch(e) {}
             }
         };
         ws.onclose = function() {
-            if (statusEl) { statusEl.textContent = 'reconnecting...'; statusEl.className = 'nav-status'; }
+            if (statusEl) {
+                statusEl.textContent = 'reconnecting...';
+                statusEl.className = 'text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider text-gray-500 bg-dark-900';
+            }
             reconnect++;
             setTimeout(connectStatusWs, Math.min(1000 * Math.pow(2, reconnect), 30000));
         };
         ws.onerror = function() {
-            if (statusEl) { statusEl.textContent = 'error'; statusEl.className = 'nav-status nav-status-err'; }
+            if (statusEl) {
+                statusEl.textContent = 'error';
+                statusEl.className = 'text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider text-red-400 bg-red-400/10';
+            }
         };
     }
 

@@ -110,6 +110,30 @@ def _get_unrealized_pnl() -> float:
         return 0.0
 
 
+def _get_portfolio_stats() -> dict:
+    """Get portfolio stats: cash, invested, equity, positions with current prices."""
+    if not _paper_executor:
+        return {"cash": 0.0, "invested": 0.0, "equity": 0.0, "unrealized_pnl": 0.0, "positions": []}
+    try:
+        portfolio = _paper_executor._portfolio
+        cash = portfolio.cash
+        positions = _paper_executor.get_positions()
+        invested = sum(
+            abs(p.get("qty", 0)) * p.get("avg_entry_price", 0) for p in positions
+        )
+        unrealized = sum(p.get("unrealized_pl", 0.0) for p in positions)
+        equity = cash + invested + unrealized
+        return {
+            "cash": round(cash, 2),
+            "invested": round(invested, 2),
+            "equity": round(equity, 2),
+            "unrealized_pnl": round(unrealized, 2),
+            "positions": positions,
+        }
+    except Exception:
+        return {"cash": 0.0, "invested": 0.0, "equity": 0.0, "unrealized_pnl": 0.0, "positions": []}
+
+
 # ---------------------------------------------------------------------------
 # Helper: load config from disk
 # ---------------------------------------------------------------------------
@@ -178,14 +202,20 @@ async def dashboard_page(request: Request):
     elif "risk" in config:
         paper_mode = config.get("paper_trade", True)
 
+    portfolio = _get_portfolio_stats()
+
     return templates.TemplateResponse(request, "dashboard.html", {
         "daily_pnl": round(daily_pnl, 2),
-        "unrealized_pnl": round(unrealized_pnl, 2),
+        "unrealized_pnl": portfolio["unrealized_pnl"],
+        "cash": portfolio["cash"],
+        "invested": portfolio["invested"],
+        "equity": portfolio["equity"],
         "open_trades": open_trades,
         "recent_trades": recent_trades,
         "pnl_history": json.dumps(pnl_history),
         "kill_switch_active": _is_kill_switch_active(),
         "paper_mode": paper_mode,
+        "portfolio_positions": portfolio["positions"],
     })
 
 
@@ -412,7 +442,7 @@ async def ws_pnl(ws: WebSocket):
         while True:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
-            unrealized_pnl = _get_unrealized_pnl()
+            portfolio = _get_portfolio_stats()
             open_trades = _db.get_open_trades() if _db else []
 
             since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -426,7 +456,11 @@ async def ws_pnl(ws: WebSocket):
                 "type": "pnl_update",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "daily_pnl": round(daily_pnl, 2),
-                "unrealized_pnl": round(unrealized_pnl, 2),
+                "unrealized_pnl": portfolio["unrealized_pnl"],
+                "cash": portfolio["cash"],
+                "invested": portfolio["invested"],
+                "equity": portfolio["equity"],
+                "portfolio_positions": portfolio["positions"],
                 "open_positions": len(open_trades),
                 "open_trades": open_trades,
                 "recent_trades": recent_trades,

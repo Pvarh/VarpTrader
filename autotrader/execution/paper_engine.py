@@ -516,12 +516,26 @@ class PaperExecutor:
         whale_flag = kwargs.get("whale_flag", 0)
 
         try:
-            # Validate funds BEFORE touching the database
+            # Scale down quantity if it exceeds available cash
             cost = abs(quantity) * fill_price
-            if cost > self._portfolio.cash:
-                raise ValueError(
-                    f"Insufficient cash: need {cost:.2f}, "
-                    f"have {self._portfolio.cash:.2f}"
+            available = self._portfolio.cash
+            if cost > available:
+                max_qty = available / fill_price
+                if market == "crypto":
+                    # Crypto allows fractional quantities
+                    quantity = float(int(max_qty * 1e6) / 1e6)  # 6 decimal places
+                else:
+                    quantity = int(max_qty)
+                if quantity <= 0:
+                    raise ValueError(
+                        f"Insufficient cash: need {cost:.2f}, "
+                        f"have {available:.2f}"
+                    )
+                logger.info(
+                    "paper_order_scaled_down | symbol={symbol} original_cost={original_cost} "
+                    "available_cash={available} new_qty={new_qty}",
+                    symbol=symbol, original_cost=round(cost, 2),
+                    available=round(available, 2), new_qty=quantity,
                 )
 
             # Journal the trade entry

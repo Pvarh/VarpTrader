@@ -227,6 +227,7 @@ class AutoTrader:
         # -- State -----------------------------------------------------------
         self._daily_trade_count = 0
         self._running = True
+        self._start_time = time.time()
 
     # ====================================================================
     # Config hot-reload
@@ -823,6 +824,43 @@ class AutoTrader:
         self.config = load_config()
 
     # ====================================================================
+    # Heartbeat
+    # ====================================================================
+    def send_heartbeat(self) -> None:
+        """Send a periodic heartbeat message to Telegram."""
+        try:
+            uptime_sec = time.time() - self._start_time
+            hours = int(uptime_sec // 3600)
+            minutes = int((uptime_sec % 3600) // 60)
+            if hours > 0:
+                uptime_str = f"{hours}h {minutes}m"
+            else:
+                uptime_str = f"{minutes}m"
+
+            positions = []
+            cash = 0.0
+            if self.paper_trade and self.paper_executor:
+                pos_list = self.paper_executor.get_positions()
+                cash = self.paper_executor._portfolio.cash
+                for p in pos_list:
+                    sym = p.get("symbol", "?")
+                    side = p.get("side", "?")
+                    entry = p.get("avg_entry_price", 0)
+                    positions.append(f"  {sym} {side} @ {entry:,.2f}")
+
+            pos_lines = "\n".join(positions) if positions else "  None"
+
+            text = (
+                f"\U0001f493 VarpTrader alive | Positions: {len(positions)}\n"
+                f"{pos_lines}\n"
+                f"Cash: ${cash:,.0f} | Uptime: {uptime_str}"
+            )
+            self.telegram.send_message(text, parse_mode="")
+            logger.info("heartbeat_sent | positions={} uptime={}", len(positions), uptime_str)
+        except Exception:
+            logger.exception("heartbeat_error")
+
+    # ====================================================================
     # Shutdown
     # ====================================================================
     def shutdown(self) -> None:
@@ -959,6 +997,14 @@ def run_live(args) -> None:
         trader.run_swing_advisor,
         CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=tz),
         id="swing_advisor",
+    )
+
+    # -- Heartbeat every 6 hours ------------------------------------------
+    scheduler.add_job(
+        trader.send_heartbeat,
+        IntervalTrigger(hours=6),
+        id="heartbeat",
+        max_instances=1,
     )
 
     # -- Signal handlers ---------------------------------------------------

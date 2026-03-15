@@ -131,6 +131,10 @@ class PositionMonitor:
                 )
                 continue
 
+            # Update paper portfolio with current price for unrealized PnL
+            if self._paper_trade and self._paper_executor:
+                self._paper_executor._portfolio.update_price(symbol, current_price)
+
             # 2. Trailing stop: tighten to breakeven when > 50 % to target
             stop_loss = self._apply_trailing_stop(
                 trade_id=trade_id,

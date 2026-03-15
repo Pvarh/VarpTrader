@@ -283,6 +283,11 @@ class StockFeed:
             if date is None:
                 date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
+            # Skip fetch on weekends (Mon=0 .. Sun=6)
+            dt = datetime.strptime(date, "%Y-%m-%d")
+            if dt.weekday() >= 5:
+                return None
+
             ticker = yf.Ticker(symbol)
             try:
                 df = ticker.history(start=date, interval="15m")

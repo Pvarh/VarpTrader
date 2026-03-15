@@ -7,9 +7,15 @@
 <!-- Status Cards -->
 <div class="status-bar">
     <div class="status-card">
-        <div class="label">Daily P&L</div>
+        <div class="label">Realized P&L</div>
         <div class="value {% if daily_pnl > 0 %}pnl-positive{% elif daily_pnl < 0 %}pnl-negative{% else %}pnl-zero{% endif %}" id="dailyPnl">
             {% if daily_pnl >= 0 %}+{% endif %}${{ "%.2f"|format(daily_pnl|abs) }}
+        </div>
+    </div>
+    <div class="status-card">
+        <div class="label">Unrealized P&L</div>
+        <div class="value {% if unrealized_pnl > 0 %}pnl-positive{% elif unrealized_pnl < 0 %}pnl-negative{% else %}pnl-zero{% endif %}" id="unrealizedPnl">
+            {% if unrealized_pnl >= 0 %}+{% endif %}${{ "%.2f"|format(unrealized_pnl|abs) }}
         </div>
     </div>
     <div class="status-card">
@@ -234,11 +240,19 @@
     window.onPnlUpdate = function(data) {
         if (data.type !== 'pnl_update') return;
 
-        // Daily PnL
+        // Realized PnL
         const pnlEl = document.getElementById('dailyPnl');
         const pnl = data.daily_pnl;
         pnlEl.textContent = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
         pnlEl.className = 'value ' + (pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : 'pnl-zero');
+
+        // Unrealized PnL
+        const upnlEl = document.getElementById('unrealizedPnl');
+        if (upnlEl && data.unrealized_pnl !== undefined) {
+            const upnl = data.unrealized_pnl;
+            upnlEl.textContent = (upnl >= 0 ? '+' : '') + '$' + Math.abs(upnl).toFixed(2);
+            upnlEl.className = 'value ' + (upnl > 0 ? 'pnl-positive' : upnl < 0 ? 'pnl-negative' : 'pnl-zero');
+        }
 
         // Open positions count
         document.getElementById('openPositions').textContent = data.open_positions;

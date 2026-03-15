@@ -852,7 +852,7 @@ def run_live(args) -> None:
     scheduler = BlockingScheduler()
 
     # -- Initialize dashboard with shared state ----------------------------
-    dashboard_init(db=trader.db, analyzer=trader.analyzer, config=trader.config, kill_switch=trader.kill_switch)
+    dashboard_init(db=trader.db, analyzer=trader.analyzer, config=trader.config, kill_switch=trader.kill_switch, paper_executor=trader.paper_executor)
 
     # -- Start dashboard in background thread ------------------------------
     dashboard_cfg = trader.config.get("dashboard", {})

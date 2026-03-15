@@ -36,13 +36,15 @@ _start_time: float = time.time()
 _whale_flags: dict = {}   # symbol -> {"buy": bool, "sell": bool, "expires": iso_str}
 _recent_signals: list = []  # last 10 signal events
 _kill_switch = None  # KillSwitch instance
+_paper_executor = None  # PaperExecutor instance
 
 
-def init(db, analyzer, config: dict, kill_switch=None) -> None:
+def init(db, analyzer, config: dict, kill_switch=None, paper_executor=None) -> None:
     """Called from main.py to inject dependencies."""
-    global _db, _analyzer, _config, _kill_switch
+    global _db, _analyzer, _config, _kill_switch, _paper_executor
     _db, _analyzer, _config = db, analyzer, config
     _kill_switch = kill_switch
+    _paper_executor = paper_executor
     logger.info("dashboard_router_initialized")
 
 
@@ -95,6 +97,19 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _get_unrealized_pnl() -> float:
+    """Get total unrealized PnL from paper executor positions."""
+    if not _paper_executor:
+        return 0.0
+    try:
+        positions = _paper_executor.get_positions()
+        if not positions:
+            return 0.0
+        return sum(p.get("unrealized_pl", 0.0) for p in positions)
+    except Exception:
+        return 0.0
+
+
 # ---------------------------------------------------------------------------
 # Helper: load config from disk
 # ---------------------------------------------------------------------------
@@ -138,6 +153,7 @@ async def dashboard_page(request: Request):
     config = _load_config_from_disk()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
+    unrealized_pnl = _get_unrealized_pnl()
     open_trades = _db.get_open_trades() if _db else []
 
     # Recent 20 trades
@@ -164,6 +180,7 @@ async def dashboard_page(request: Request):
 
     return templates.TemplateResponse(request, "dashboard.html", {
         "daily_pnl": round(daily_pnl, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
         "open_trades": open_trades,
         "recent_trades": recent_trades,
         "pnl_history": json.dumps(pnl_history),
@@ -395,6 +412,7 @@ async def ws_pnl(ws: WebSocket):
         while True:
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
+            unrealized_pnl = _get_unrealized_pnl()
             open_trades = _db.get_open_trades() if _db else []
 
             since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
@@ -408,6 +426,7 @@ async def ws_pnl(ws: WebSocket):
                 "type": "pnl_update",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "daily_pnl": round(daily_pnl, 2),
+                "unrealized_pnl": round(unrealized_pnl, 2),
                 "open_positions": len(open_trades),
                 "open_trades": open_trades,
                 "recent_trades": recent_trades,

@@ -161,7 +161,12 @@ def run_overseer(deep: bool = False, model: str | None = None) -> str:
 
     try:
         result = subprocess.run(
-            ["claude", "--print", "--model", resolved_model, "-p", prompt],
+            [
+                "claude", "--print",
+                "--dangerously-skip-permissions",
+                "--model", resolved_model,
+                "-p", prompt,
+            ],
             capture_output=True,
             text=True,
             timeout=900,   # Opus can take longer

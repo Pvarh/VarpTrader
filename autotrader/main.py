@@ -42,6 +42,7 @@ from data.feed_stocks import StockFeed
 from data.feed_crypto import CryptoFeed
 from signals.first_candle import FirstCandleSignal
 from signals.ema_cross import EMACrossSignal
+from signals.ema_pullback import EMAPullbackSignal
 from signals.vwap_reversion import VWAPReversionSignal
 from signals.rsi_momentum import RSIMomentumSignal
 from signals.bollinger_fade import BollingerFadeSignal
@@ -129,6 +130,7 @@ class AutoTrader:
         self.signals = [
             FirstCandleSignal(strat_cfg["first_candle"]),
             EMACrossSignal(strat_cfg["ema_cross"]),
+            EMAPullbackSignal(strat_cfg["ema_pullback"]),
             VWAPReversionSignal(strat_cfg["vwap_reversion"]),
             RSIMomentumSignal(strat_cfg["rsi_momentum"]),
             BollingerFadeSignal(strat_cfg["bollinger_fade"]),
@@ -708,6 +710,46 @@ class AutoTrader:
                 curr_fast_ema=curr_fast,
                 curr_slow_ema=curr_slow,
                 rsi=rsi, current_price=current_price,
+            )
+        elif isinstance(sig, EMAPullbackSignal):
+            ema_candles = (
+                candles_1h
+                if candles_1h and len(candles_1h) >= 50
+                else candles
+            )
+            closes = [c.close for c in ema_candles]
+
+            fast_period = sig.config.get("fast_ema", 20)
+            slow_period = sig.config.get("slow_ema", 50)
+
+            fast_ema_series = Indicators.ema(closes, fast_period)
+            slow_ema_series = Indicators.ema(closes, slow_period)
+
+            if not fast_ema_series or not slow_ema_series:
+                return SignalResult(triggered=False, strategy_name=sig.name)
+
+            ema_fast = fast_ema_series[-1]
+            ema_slow = slow_ema_series[-1]
+
+            if sig.config.get("volume_confirmation", True):
+                volumes = [c.volume for c in ema_candles]
+                if len(volumes) >= 20:
+                    avg_vol = sum(volumes[-20:]) / 20
+                    if volumes[-1] <= avg_vol:
+                        return SignalResult(
+                            triggered=False, strategy_name=sig.name,
+                            reason="Volume below 20-period average",
+                        )
+
+            rsi_series = Indicators.rsi(closes, 14)
+            rsi = rsi_series[-1] if rsi_series else 50.0
+
+            return sig.evaluate_pullback(
+                symbol=symbol,
+                current_price=current_price,
+                ema_fast=ema_fast,
+                ema_slow=ema_slow,
+                rsi=rsi,
             )
 
         return sig.evaluate(symbol, candles, current_price, market)

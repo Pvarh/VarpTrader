@@ -319,6 +319,7 @@ class BacktestEngine:
         # Lazy imports to avoid hard dependency at module level
         from signals.rsi_momentum import RSIMomentumSignal
         from signals.ema_cross import EMACrossSignal
+        from signals.ema_pullback import EMAPullbackSignal
         from signals.bollinger_fade import BollingerFadeSignal
         from signals.vwap_reversion import VWAPReversionSignal
         from signals.first_candle import FirstCandleSignal
@@ -458,6 +459,40 @@ class BacktestEngine:
                 current_candle=candle,
                 avg_volume=avg_volume,
                 minutes_since_open=minutes_since_open,
+            )
+
+        # ---- EMA Pullback ------------------------------------------------
+        if isinstance(signal, EMAPullbackSignal):
+            fast_period: int = signal.config.get("fast_ema", 20)
+            slow_period: int = signal.config.get("slow_ema", 50)
+
+            ema_closes = (
+                [c.close for c in candles_1h_so_far]
+                if candles_1h_so_far and len(candles_1h_so_far) >= slow_period
+                else closes
+            )
+            if len(ema_closes) < slow_period:
+                return no_trigger
+
+            ema_fast = self._compute_ema(ema_closes, fast_period)
+            ema_slow = self._compute_ema(ema_closes, slow_period)
+
+            if signal.config.get("volume_confirmation", True):
+                ema_candles = candles_1h_so_far if candles_1h_so_far and len(candles_1h_so_far) >= slow_period else candles_so_far
+                volumes = [c.volume for c in ema_candles]
+                if len(volumes) >= 20:
+                    avg_vol = sum(volumes[-20:]) / 20
+                    if volumes[-1] <= avg_vol:
+                        return no_trigger
+
+            rsi = self._compute_rsi(closes, 14) if len(closes) > 14 else 50.0
+
+            return signal.evaluate_pullback(
+                symbol=candle.symbol,
+                current_price=candle.close,
+                ema_fast=ema_fast,
+                ema_slow=ema_slow,
+                rsi=rsi,
             )
 
         # ---- Fallback: generic evaluate ----------------------------------

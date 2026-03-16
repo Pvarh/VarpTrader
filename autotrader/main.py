@@ -242,6 +242,8 @@ class AutoTrader:
         self._daily_trade_count = 0
         self._running = True
         self._start_time = time.time()
+        self._last_signal_time = time.time()
+        self._starvation_alerted = False
 
     # ====================================================================
     # Config hot-reload
@@ -737,15 +739,6 @@ class AutoTrader:
                 "reward_ratio_rejected | symbol={} strategy={}",
                 symbol, result.strategy_name,
             )
-            self.telegram.send_signal_alert(
-                symbol=symbol,
-                strategy=result.strategy_name,
-                direction=result.direction.value.upper(),
-                entry=result.entry_price,
-                stop_loss=result.stop_loss,
-                take_profit=result.take_profit,
-                action="REJECTED (R:R)",
-            )
             return
 
         candles = (
@@ -836,17 +829,7 @@ class AutoTrader:
             trade_id = self.db.insert_trade(trade)
 
         self._daily_trade_count += 1
-
-        alert_data = {
-            "action": "ENTRY",
-            "trade_id": trade_id,
-            "symbol": symbol,
-            "direction": result.direction.value,
-            "price": result.entry_price,
-            "quantity": quantity,
-            "strategy": result.strategy_name,
-        }
-        self.telegram.send_trade_alert(alert_data)
+        self._last_signal_time = time.time()
 
         logger.info(
             "trade_opened | trade_id={} symbol={} strategy={} direction={} "
@@ -973,26 +956,227 @@ class AutoTrader:
 
             positions = []
             cash = 0.0
+            equity = 0.0
+            unrealized = 0.0
             if self.paper_trade and self.paper_executor:
                 pos_list = self.paper_executor.get_positions()
-                cash = self.paper_executor._portfolio.cash
+                portfolio = self.paper_executor._portfolio
+                cash = portfolio.cash
                 for p in pos_list:
                     sym = p.get("symbol", "?")
                     side = p.get("side", "?")
                     entry = p.get("avg_entry_price", 0)
-                    positions.append(f"  {sym} {side} @ {entry:,.2f}")
+                    pnl = p.get("unrealized_pl", 0.0)
+                    unrealized += pnl
+                    pnl_str = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
+                    positions.append(f"  {sym} {side} @ {entry:,.2f} ({pnl_str})")
+                invested = sum(
+                    abs(p.get("qty", 0)) * p.get("avg_entry_price", 0)
+                    for p in pos_list
+                )
+                equity = cash + invested + unrealized
 
             pos_lines = "\n".join(positions) if positions else "  None"
 
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            daily_pnl = self.db.get_daily_pnl(today_str)
+
             text = (
-                f"\U0001f493 VarpTrader alive | Positions: {len(positions)}\n"
+                f"\U0001f493 VarpTrader Heartbeat\n"
+                f"Equity: ${equity:,.0f} | Cash: ${cash:,.0f}\n"
+                f"Positions: {len(positions)}\n"
                 f"{pos_lines}\n"
-                f"Cash: ${cash:,.0f} | Uptime: {uptime_str}"
+                f"Daily P&L: ${daily_pnl:+,.0f} | Unrealized: ${unrealized:+,.0f}\n"
+                f"Uptime: {uptime_str}"
             )
             self.telegram.send_message(text, parse_mode="")
-            logger.info("heartbeat_sent | positions={} uptime={}", len(positions), uptime_str)
+            logger.info("heartbeat_sent | equity={} positions={} uptime={}", round(equity, 2), len(positions), uptime_str)
         except Exception:
             logger.exception("heartbeat_error")
+
+    # ====================================================================
+    # Signal starvation detection
+    # ====================================================================
+    def check_signal_starvation(self) -> None:
+        """Alert if no signals have fired in the last 4 hours during market hours."""
+        try:
+            now = datetime.now(timezone.utc)
+            hour_utc = now.hour
+
+            # Only check during active hours: stocks 13:30-20:00 UTC, crypto 24/7
+            # Use a simple check: always monitor since crypto is 24/7
+            elapsed = time.time() - self._last_signal_time
+            starvation_hours = 4
+
+            if elapsed > starvation_hours * 3600:
+                if not self._starvation_alerted:
+                    hours_since = elapsed / 3600
+                    logger.warning(
+                        "signal_starvation | hours_since_last_signal={:.1f}",
+                        hours_since,
+                    )
+                    self.telegram.send_message(
+                        f"SIGNAL STARVATION\n\n"
+                        f"No signals have fired in {hours_since:.1f} hours.\n"
+                        f"Filters may be too aggressive.\n"
+                        f"Check regime detector, session bias, and RSI thresholds.",
+                        parse_mode="",
+                    )
+                    self._starvation_alerted = True
+            else:
+                self._starvation_alerted = False
+        except Exception:
+            logger.exception("starvation_check_error")
+
+    # ====================================================================
+    # Telegram commands
+    # ====================================================================
+    def poll_telegram_commands(self) -> None:
+        """Poll for incoming Telegram bot commands and respond."""
+        try:
+            updates = self.telegram.get_updates()
+            if not updates:
+                return
+
+            for update in updates:
+                msg = update.get("message", {})
+                text = (msg.get("text") or "").strip()
+                chat_id = str(msg.get("chat", {}).get("id", ""))
+
+                if chat_id != self.telegram._chat_id:
+                    continue
+
+                if not text.startswith("/"):
+                    continue
+
+                cmd = text.split()[0].lower().split("@")[0]
+
+                if cmd == "/status":
+                    self._cmd_status()
+                elif cmd == "/positions":
+                    self._cmd_positions()
+                elif cmd == "/pnl":
+                    self._cmd_pnl()
+                elif cmd == "/config":
+                    self._cmd_config()
+                elif cmd == "/kill":
+                    self._cmd_kill()
+                elif cmd == "/resume":
+                    self._cmd_resume()
+                elif cmd == "/help":
+                    self._cmd_help()
+                else:
+                    self.telegram.send_message(
+                        f"Unknown command: {cmd}\nType /help for available commands.",
+                        parse_mode="",
+                    )
+        except Exception:
+            logger.debug("telegram_poll_error")
+
+    def _cmd_status(self) -> None:
+        equity = 0.0
+        cash = 0.0
+        positions_count = 0
+        if self.paper_trade and self.paper_executor:
+            portfolio = self.paper_executor._portfolio
+            cash = portfolio.cash
+            pos = self.paper_executor.get_positions()
+            positions_count = len(pos)
+            invested = sum(abs(p.get("qty", 0)) * p.get("avg_entry_price", 0) for p in pos)
+            unrealized = sum(p.get("unrealized_pl", 0.0) for p in pos)
+            equity = cash + invested + unrealized
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        daily_pnl = self.db.get_daily_pnl(today_str)
+        uptime = time.time() - self._start_time
+        h, m = int(uptime // 3600), int((uptime % 3600) // 60)
+        mode = "PAPER" if self.paper_trade else "LIVE"
+        halted = "YES" if self.kill_switch.halted else "No"
+        hours_since_signal = (time.time() - self._last_signal_time) / 3600
+
+        self.telegram.send_message(
+            f"Status: {mode} mode\n"
+            f"Equity: ${equity:,.0f} | Cash: ${cash:,.0f}\n"
+            f"Positions: {positions_count}\n"
+            f"Daily P&L: ${daily_pnl:+,.0f}\n"
+            f"Kill switch: {halted}\n"
+            f"Last signal: {hours_since_signal:.1f}h ago\n"
+            f"Uptime: {h}h {m}m",
+            parse_mode="",
+        )
+
+    def _cmd_positions(self) -> None:
+        if not (self.paper_trade and self.paper_executor):
+            self.telegram.send_message("No paper executor active.", parse_mode="")
+            return
+        pos = self.paper_executor.get_positions()
+        if not pos:
+            self.telegram.send_message("No open positions.", parse_mode="")
+            return
+        lines = ["Open Positions:"]
+        for p in pos:
+            sym = p.get("symbol", "?")
+            side = p.get("side", "?")
+            entry = p.get("avg_entry_price", 0)
+            pnl = p.get("unrealized_pl", 0.0)
+            lines.append(f"  {sym} {side} @ {entry:,.2f} (P&L: ${pnl:+,.0f})")
+        self.telegram.send_message("\n".join(lines), parse_mode="")
+
+    def _cmd_pnl(self) -> None:
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        daily_pnl = self.db.get_daily_pnl(today_str)
+        trades = self.db.get_closed_trades(limit=10)
+        lines = [f"Daily P&L: ${daily_pnl:+,.2f}", "", "Last 10 trades:"]
+        for t in (trades or []):
+            sym = t.get("symbol", "?")
+            pnl = t.get("pnl", 0.0)
+            outcome = t.get("outcome", "?")
+            strategy = t.get("strategy", "?")
+            lines.append(f"  {sym} {strategy} {outcome} ${pnl:+,.2f}")
+        self.telegram.send_message("\n".join(lines), parse_mode="")
+
+    def _cmd_config(self) -> None:
+        strats = self.config.get("strategies", {})
+        lines = ["Strategy configs:"]
+        for name, cfg in strats.items():
+            enabled = cfg.get("enabled", True)
+            status = "ON" if enabled else "OFF"
+            lines.append(f"  {name}: {status}")
+        risk = self.config.get("risk", {})
+        lines.append(f"\nRisk:")
+        lines.append(f"  position_size: {risk.get('position_size_pct', 'N/A')}")
+        lines.append(f"  stop_loss: {risk.get('stop_loss_pct', 'N/A')}")
+        lines.append(f"  max_positions: {risk.get('max_positions', 'N/A')}")
+        self.telegram.send_message("\n".join(lines), parse_mode="")
+
+    def _cmd_kill(self) -> None:
+        self.kill_switch._halted = True
+        self.telegram.send_message(
+            "Kill switch ACTIVATED manually.\nAll trading halted.",
+            parse_mode="",
+        )
+        logger.warning("kill_switch_manual_activate")
+
+    def _cmd_resume(self) -> None:
+        self.kill_switch.reset()
+        self.telegram.send_message(
+            "Kill switch RESET. Trading resumed.",
+            parse_mode="",
+        )
+        logger.info("kill_switch_manual_reset")
+
+    def _cmd_help(self) -> None:
+        self.telegram.send_message(
+            "VarpTrader Commands:\n"
+            "/status - Bot status, equity, uptime\n"
+            "/positions - Open positions with P&L\n"
+            "/pnl - Daily P&L and last 10 trades\n"
+            "/config - Strategy and risk config\n"
+            "/kill - Activate kill switch\n"
+            "/resume - Reset kill switch\n"
+            "/help - This message",
+            parse_mode="",
+        )
 
     # ====================================================================
     # Shutdown
@@ -1133,11 +1317,27 @@ def run_live(args) -> None:
         id="swing_advisor",
     )
 
-    # -- Heartbeat every 6 hours ------------------------------------------
+    # -- Heartbeat every 2 hours ------------------------------------------
     scheduler.add_job(
         trader.send_heartbeat,
-        IntervalTrigger(hours=6),
+        IntervalTrigger(hours=2),
         id="heartbeat",
+        max_instances=1,
+    )
+
+    # -- Signal starvation check every 30 minutes -------------------------
+    scheduler.add_job(
+        trader.check_signal_starvation,
+        IntervalTrigger(minutes=30),
+        id="starvation_check",
+        max_instances=1,
+    )
+
+    # -- Telegram command polling every 10 seconds -------------------------
+    scheduler.add_job(
+        trader.poll_telegram_commands,
+        IntervalTrigger(seconds=10),
+        id="telegram_commands",
         max_instances=1,
     )
 
@@ -1150,21 +1350,7 @@ def run_live(args) -> None:
     signal_mod.signal(signal_mod.SIGTERM, _signal_handler)
 
     logger.info("autotrader_started | paper_trade={}", trader.paper_trade)
-    mode = "PAPER" if trader.paper_trade else "LIVE"
-    stocks = trader.config.get("watchlist", {}).get("stocks", [])
-    crypto = trader.config.get("watchlist", {}).get("crypto", [])
-    dashboard_cfg = trader.config.get("dashboard", {})
-    dash_url = dashboard_cfg.get(
-        "public_url",
-        f"http://{dashboard_cfg.get('host', '0.0.0.0')}:{dashboard_cfg.get('port', 8000)}",
-    )
-    trader.telegram.send_message(
-        f"VarpTrader started ({mode} mode)\n"
-        f"Stocks: {', '.join(stocks)}\n"
-        f"Crypto: {', '.join(crypto)}\n"
-        f"Dashboard: {dash_url}",
-        parse_mode="",
-    )
+
     try:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):

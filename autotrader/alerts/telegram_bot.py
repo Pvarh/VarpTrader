@@ -304,3 +304,36 @@ class TelegramAlert:
             f"Time: {timestamp}"
         )
         return self.send_message(text, parse_mode="")
+
+    # ------------------------------------------------------------------
+    # Incoming commands (polling)
+    # ------------------------------------------------------------------
+    def get_updates(self) -> list[dict]:
+        """Poll for new incoming messages via getUpdates.
+
+        Uses an internal offset to avoid processing the same message twice.
+        """
+        if not hasattr(self, "_update_offset"):
+            self._update_offset = 0
+
+        url = f"{self._base_url}/getUpdates"
+        params: dict[str, Any] = {"timeout": 1, "limit": 10}
+        if self._update_offset:
+            params["offset"] = self._update_offset
+
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(url, params=params)
+                response.raise_for_status()
+
+            data = response.json()
+            if not data.get("ok"):
+                return []
+
+            results = data.get("result", [])
+            if results:
+                self._update_offset = results[-1]["update_id"] + 1
+            return results
+
+        except Exception:
+            return []

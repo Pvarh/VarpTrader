@@ -151,7 +151,6 @@ class TestStopLossLong:
 
     def test_stop_loss_hit_exact(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
-        mock_telegram: MagicMock,
     ) -> None:
         """Price exactly at stop-loss should trigger exit for a long trade."""
         trade_id = _insert_open_trade(db, stop_loss=95.0, take_profit=110.0, entry_price=100.0)
@@ -162,7 +161,6 @@ class TestStopLossLong:
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "loss"
         assert result["exit_price"] == 95.0
-        mock_telegram.send_trade_alert.assert_called_once()
 
     def test_stop_loss_hit_below(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -183,7 +181,6 @@ class TestStopLossShort:
 
     def test_stop_loss_hit_exact(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
-        mock_telegram: MagicMock,
     ) -> None:
         """Price exactly at stop-loss should trigger exit for a short trade."""
         trade_id = _insert_open_trade(
@@ -196,7 +193,6 @@ class TestStopLossShort:
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "loss"
         assert result["exit_price"] == 105.0
-        mock_telegram.send_trade_alert.assert_called_once()
 
     def test_stop_loss_hit_above(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -224,7 +220,6 @@ class TestTakeProfitLong:
 
     def test_take_profit_hit_exact(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
-        mock_telegram: MagicMock,
     ) -> None:
         """Price exactly at take-profit should trigger exit for a long trade."""
         trade_id = _insert_open_trade(db, entry_price=100.0, stop_loss=95.0, take_profit=110.0)
@@ -235,7 +230,6 @@ class TestTakeProfitLong:
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "win"
         assert result["exit_price"] == 110.0
-        mock_telegram.send_trade_alert.assert_called_once()
 
     def test_take_profit_hit_above(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -256,7 +250,6 @@ class TestTakeProfitShort:
 
     def test_take_profit_hit_exact(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
-        mock_telegram: MagicMock,
     ) -> None:
         """Price exactly at take-profit should trigger exit for a short trade."""
         trade_id = _insert_open_trade(
@@ -269,7 +262,6 @@ class TestTakeProfitShort:
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "win"
         assert result["exit_price"] == 90.0
-        mock_telegram.send_trade_alert.assert_called_once()
 
     def test_take_profit_hit_below(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -668,7 +660,7 @@ class TestMultipleTrades:
 
     def test_mixed_outcomes(
         self, db: TradeDatabase, monitor: PositionMonitor,
-        mock_stock_feed: MagicMock, mock_telegram: MagicMock,
+        mock_stock_feed: MagicMock,
     ) -> None:
         """Multiple trades: one hits SL, one hits TP, one stays open."""
         # Trade 1: long, will hit SL (price=93 < SL=95)
@@ -701,38 +693,3 @@ class TestMultipleTrades:
         assert r2["outcome"] == "win"
         assert r3["outcome"] == "open"
 
-        # Two alerts sent (SL + TP), not three
-        assert mock_telegram.send_trade_alert.call_count == 2
-
-
-# ======================================================================
-# Alert content tests
-# ======================================================================
-
-
-class TestAlertContent:
-    """Verify that Telegram alerts contain the correct trade details."""
-
-    def test_exit_alert_has_pnl(
-        self, db: TradeDatabase, monitor: PositionMonitor,
-        mock_stock_feed: MagicMock, mock_telegram: MagicMock,
-    ) -> None:
-        """Exit alert should include PnL and correct action/direction."""
-        _insert_open_trade(
-            db, symbol="AAPL", entry_price=100.0, quantity=10.0,
-            stop_loss=95.0, take_profit=110.0, strategy="ema_cross",
-        )
-        mock_stock_feed.get_latest_price.return_value = 110.0
-
-        monitor.check_open_positions()
-
-        alert_call = mock_telegram.send_trade_alert.call_args
-        alert_dict = alert_call[0][0]  # first positional argument
-
-        assert alert_dict["action"] == "EXIT"
-        assert alert_dict["symbol"] == "AAPL"
-        assert alert_dict["direction"] == "LONG"
-        assert alert_dict["price"] == 110.0
-        assert alert_dict["quantity"] == 10.0
-        assert alert_dict["strategy"] == "ema_cross"
-        assert alert_dict["pnl"] == pytest.approx(100.0)

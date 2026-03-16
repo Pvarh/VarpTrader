@@ -262,6 +262,25 @@ class TradeDatabase:
             rows = cur.fetchall()
         return [dict(r) for r in rows]
 
+    def get_closed_trades(self, limit: int = 30) -> list[dict]:
+        """Fetch the most recent closed trades.
+
+        Args:
+            limit: Maximum number of trades to return.
+
+        Returns:
+            List of closed trade dictionaries, most recent first.
+        """
+        with self._cursor() as cur:
+            cur.execute(
+                """SELECT * FROM trades
+                   WHERE outcome IS NOT NULL AND outcome != 'open'
+                   ORDER BY id DESC LIMIT ?""",
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
     def insert_analysis_run(self, run: AnalysisRun) -> int:
         """Insert an analysis run record.
 

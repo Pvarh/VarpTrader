@@ -304,13 +304,6 @@ class PositionMonitor:
                 new_stop=entry_price,
                 progress_pct=round(progress * 100, 1),
             )
-            self._telegram.send_trailing_stop_alert(
-                symbol=symbol,
-                trade_id=trade_id,
-                old_stop=stop_loss,
-                new_stop=entry_price,
-                progress_pct=round(progress * 100, 1),
-            )
             return entry_price
 
         return stop_loss
@@ -423,7 +416,6 @@ class PositionMonitor:
             "strategy": trade.get("strategy", "N/A"),
             "pnl": pnl,
         }
-        self._telegram.send_trade_alert(alert_dict)
         logger.info(
             "exit_alert_sent | trade_id={trade_id} symbol={symbol} reason={reason} exit_price={exit_price} pnl={pnl} pnl_pct={pnl_pct} outcome={outcome}",
             trade_id=trade_id,

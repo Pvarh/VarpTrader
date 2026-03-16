@@ -47,6 +47,9 @@ from signals.rsi_momentum import RSIMomentumSignal
 from signals.bollinger_fade import BollingerFadeSignal
 from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
+from signals.regime_detector import RegimeDetector
+from signals.polymarket_sentiment import PolymarketSentiment
+from signals.session_bias import SessionBias
 from whale.block_trades import BlockTradeDetector
 from whale.onchain import OnChainWhaleDetector
 from whale.orderbook import OrderBookScanner
@@ -221,6 +224,17 @@ class AutoTrader:
             paper_executor=self.paper_executor,
         )
 
+        # -- Regime / sentiment / session bias ------------------------------
+        self.regime_detector = RegimeDetector(
+            adx_threshold=self.config.get("regime", {}).get("adx_threshold", 25.0),
+        )
+        self.polymarket = PolymarketSentiment(
+            block_short_threshold=self.config.get("polymarket", {}).get(
+                "block_short_threshold", 0.65
+            ),
+        )
+        self.session_bias = SessionBias()
+
         # -- Trade lifecycle -------------------------------------------------
         self.trade_manager = TradeManager()
 
@@ -322,6 +336,11 @@ class AutoTrader:
             symbol, period="1mo", interval="1h"
         )
 
+        # -- Regime detection & session bias (use 1h candles) ----------------
+        regime = self.regime_detector.detect(candles_1h or candles_5m)
+        if candles_1h and len(candles_1h) >= 50:
+            self.session_bias.evaluate(candles_1h)
+
         whale_flag = 0
         if self.block_detector.has_sell_flag(symbol):
             logger.info("whale_sell_flag_active | symbol={}", symbol)
@@ -336,6 +355,25 @@ class AutoTrader:
                     first_candle, avg_volume, candles_1h=candles_1h,
                 )
                 if not result.triggered:
+                    continue
+
+                # -- Trend filter gate --------------------------------------
+                if not self._regime_allows(sig.name, result.direction, regime):
+                    logger.info(
+                        "regime_blocked | symbol={} strategy={} direction={} regime={}",
+                        symbol, sig.name, result.direction.value, regime,
+                    )
+                    continue
+
+                # -- Session bias gate --------------------------------------
+                if result.direction and self.session_bias.should_block(
+                    result.direction.value
+                ):
+                    logger.info(
+                        "session_bias_blocked | symbol={} strategy={} direction={} bias={}",
+                        symbol, sig.name, result.direction.value,
+                        self.session_bias.bias,
+                    )
                     continue
 
                 if (
@@ -436,6 +474,11 @@ class AutoTrader:
             symbol, timeframe="1h", limit=250
         )
 
+        # -- Regime detection & session bias ---------------------------------
+        regime = self.regime_detector.detect(candles_1h or candles_5m)
+        if candles_1h and len(candles_1h) >= 50:
+            self.session_bias.evaluate(candles_1h)
+
         whale_flag = 0
         if self.onchain_detector.has_sell_pressure(base_symbol):
             logger.info(
@@ -455,6 +498,36 @@ class AutoTrader:
                 if not result.triggered:
                     continue
 
+                # -- Trend filter gate --------------------------------------
+                if not self._regime_allows(sig.name, result.direction, regime):
+                    logger.info(
+                        "regime_blocked | symbol={} strategy={} direction={} regime={}",
+                        symbol, sig.name, result.direction.value, regime,
+                    )
+                    continue
+
+                # -- Session bias gate --------------------------------------
+                if result.direction and self.session_bias.should_block(
+                    result.direction.value
+                ):
+                    logger.info(
+                        "session_bias_blocked | symbol={} strategy={} direction={} bias={}",
+                        symbol, sig.name, result.direction.value,
+                        self.session_bias.bias,
+                    )
+                    continue
+
+                # -- Polymarket sentiment (BTC/ETH only) --------------------
+                if (
+                    result.direction == SignalDirection.SHORT
+                    and self.polymarket.should_block_short(base_symbol)
+                ):
+                    logger.info(
+                        "polymarket_blocked_short | symbol={} strategy={} asset={}",
+                        symbol, sig.name, base_symbol,
+                    )
+                    continue
+
                 self._process_signal(
                     result, symbol, "crypto", account_value,
                     current_positions, 0,
@@ -468,6 +541,35 @@ class AutoTrader:
     # ====================================================================
     # Signal evaluation helpers
     # ====================================================================
+    @staticmethod
+    def _regime_allows(
+        strategy_name: str,
+        direction: SignalDirection | None,
+        regime: str,
+    ) -> bool:
+        """Check whether *regime* permits *direction* for *strategy_name*.
+
+        Rules:
+        - rsi_momentum  shorts only in trending_down or ranging
+        - rsi_momentum  longs  only in trending_up   or ranging
+        - bollinger_fade only fires in ranging regime
+        - ema_cross      always allowed (it IS trend-following)
+        - first_candle   always allowed
+        """
+        if direction is None:
+            return True
+
+        if strategy_name == "rsi_momentum":
+            if direction == SignalDirection.SHORT:
+                return regime in ("trending_down", "ranging")
+            if direction == SignalDirection.LONG:
+                return regime in ("trending_up", "ranging")
+
+        if strategy_name == "bollinger_fade":
+            return regime == "ranging"
+
+        return True
+
     def _run_signal(
         self,
         sig,
@@ -486,12 +588,16 @@ class AutoTrader:
             minutes_since = max(
                 0, int((now - market_open).total_seconds() / 60)
             )
+            atr_series = Indicators.atr(candles, 20)
+            atr_20d = atr_series[-1] if atr_series else first_candle.high - first_candle.low
             return sig.evaluate_with_context(
                 symbol=symbol,
-                first_candle=first_candle,
+                orb_high=first_candle.high,
+                orb_low=first_candle.low,
                 current_candle=candles[-1],
                 avg_volume=avg_volume,
                 minutes_since_open=minutes_since,
+                atr_20d=atr_20d,
             )
         elif isinstance(sig, RSIMomentumSignal):
             closes_5m = [c.close for c in candles]

@@ -285,6 +285,104 @@ class Indicators:
         return result
 
     # ------------------------------------------------------------------
+    # ADX  (Average Directional Index)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def adx(candles: list[OHLCV], period: int = 14) -> list[float]:
+        """Compute Average Directional Index.
+
+        Uses Wilder's smoothing for +DI, -DI, and ADX.
+
+        Parameters
+        ----------
+        candles:
+            List of OHLCV bars, oldest first.
+        period:
+            ADX look-back period (default 14).
+
+        Returns
+        -------
+        list[float]
+            ADX series of the same length as *candles*.  The first
+            ``2 * period`` values are approximate (not enough data for
+            a fully warmed-up ADX) and default to 0.0.
+        """
+        if not candles or period <= 0:
+            return []
+        n = len(candles)
+        if n < 2:
+            return [0.0] * n
+
+        # True Range, +DM, -DM
+        tr = [0.0] * n
+        plus_dm = [0.0] * n
+        minus_dm = [0.0] * n
+
+        for i in range(1, n):
+            high_low = candles[i].high - candles[i].low
+            high_prev = abs(candles[i].high - candles[i - 1].close)
+            low_prev = abs(candles[i].low - candles[i - 1].close)
+            tr[i] = max(high_low, high_prev, low_prev)
+
+            up_move = candles[i].high - candles[i - 1].high
+            down_move = candles[i - 1].low - candles[i].low
+
+            plus_dm[i] = up_move if up_move > down_move and up_move > 0 else 0.0
+            minus_dm[i] = down_move if down_move > up_move and down_move > 0 else 0.0
+
+        result = [0.0] * n
+        if n < period + 1:
+            return result
+
+        # Seed smoothed TR, +DM, -DM with sum of first period values
+        smooth_tr = sum(tr[1 : period + 1])
+        smooth_plus = sum(plus_dm[1 : period + 1])
+        smooth_minus = sum(minus_dm[1 : period + 1])
+
+        # First DI values
+        plus_di = 100.0 * smooth_plus / smooth_tr if smooth_tr else 0.0
+        minus_di = 100.0 * smooth_minus / smooth_tr if smooth_tr else 0.0
+        di_sum = plus_di + minus_di
+        dx_vals: list[float] = []
+        if di_sum:
+            dx_vals.append(100.0 * abs(plus_di - minus_di) / di_sum)
+        else:
+            dx_vals.append(0.0)
+
+        # Continue Wilder smoothing
+        for i in range(period + 1, n):
+            smooth_tr = smooth_tr - smooth_tr / period + tr[i]
+            smooth_plus = smooth_plus - smooth_plus / period + plus_dm[i]
+            smooth_minus = smooth_minus - smooth_minus / period + minus_dm[i]
+
+            plus_di = 100.0 * smooth_plus / smooth_tr if smooth_tr else 0.0
+            minus_di = 100.0 * smooth_minus / smooth_tr if smooth_tr else 0.0
+            di_sum = plus_di + minus_di
+            if di_sum:
+                dx_vals.append(100.0 * abs(plus_di - minus_di) / di_sum)
+            else:
+                dx_vals.append(0.0)
+
+        # ADX = smoothed average of DX
+        if len(dx_vals) < period:
+            # Not enough data for ADX; use simple average of available DX
+            for i, dx in enumerate(dx_vals):
+                result[period + i] = dx
+            return result
+
+        # Seed ADX with SMA of first `period` DX values
+        adx_val = sum(dx_vals[:period]) / period
+        result[2 * period] = adx_val
+
+        for i in range(period, len(dx_vals)):
+            adx_val = (adx_val * (period - 1) + dx_vals[i]) / period
+            idx = period + i  # map dx_vals index back to candle index
+            if idx < n:
+                result[idx] = adx_val
+
+        return result
+
+    # ------------------------------------------------------------------
     # VWAP  (Volume Weighted Average Price, intraday, daily reset)
     # ------------------------------------------------------------------
     @staticmethod

@@ -123,6 +123,21 @@ def build_context(
             open_positions = db.get_open_trades()
         except Exception as exc:
             logger.warning("overseer_query_open_failed | err={}", exc)
+
+        # Latest nightly analysis run
+        latest_analysis: dict | None = None
+        try:
+            with db._cursor() as cur:
+                cur.execute(
+                    "SELECT run_timestamp, trades_analyzed, report_markdown, "
+                    "config_changes_json, approved "
+                    "FROM analysis_runs ORDER BY id DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row:
+                    latest_analysis = dict(row)
+        except Exception as exc:
+            logger.warning("overseer_query_analysis_failed | err={}", exc)
     finally:
         db.close()
 
@@ -222,6 +237,26 @@ def build_context(
     # Errors / warnings
     sections.append(f"\n--- ERRORS/WARNINGS (24h, {len(events.get('errors', []))} total) ---")
     sections.append(_fmt_event_list(events.get("errors", []), max_items=15))
+
+    # Latest nightly analysis report
+    sections.append("\n--- LATEST NIGHTLY ANALYSIS REPORT ---")
+    if latest_analysis:
+        sections.append(
+            f"  Run: {latest_analysis.get('run_timestamp', '?')} | "
+            f"trades_analyzed={latest_analysis.get('trades_analyzed', '?')} | "
+            f"approved={latest_analysis.get('approved', '?')}"
+        )
+        report_md = latest_analysis.get("report_markdown") or ""
+        if len(report_md) > 2000:
+            report_md = report_md[:2000] + "\n  ... (truncated)"
+        sections.append(report_md if report_md else "  (no report text)")
+        cfg_changes = latest_analysis.get("config_changes_json") or ""
+        if cfg_changes:
+            if len(cfg_changes) > 500:
+                cfg_changes = cfg_changes[:500] + " ... (truncated)"
+            sections.append(f"  config_changes: {cfg_changes}")
+    else:
+        sections.append("  (no nightly analysis runs found)")
 
     sections.append("\n" + "=" * 60)
 

@@ -6,7 +6,8 @@
   "strategies": {
     "first_candle":    { "enabled": true,  "orb_window_minutes": 60,
                          "volume_multiplier": 1.5, "valid_until_hour": 13 },
-    "ema_cross":       { "enabled": true,  "fast_ema": 50, "slow_ema": 200 },
+    "ema_cross":       { "enabled": true,  "fast_ema": 20, "slow_ema": 50,
+                         "volume_confirmation": true },
     "vwap_reversion":  { "enabled": false, "vwap_deviation_pct": 0.3 },
     "rsi_momentum":    { "enabled": true,  "rsi_oversold": 25,
                          "rsi_overbought": 75, "rsi_neutral_low": 45,
@@ -45,7 +46,7 @@
     "min_winrate_diff_to_suggest": 0.10,
     "model": "claude-sonnet-4-6",
     "use_batch_api": true,
-    "auto_apply_changes": false
+    "auto_apply_changes": true
   },
   "go_live_thresholds": {
     "orb_min_win_rate": 0.56,

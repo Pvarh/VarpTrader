@@ -654,13 +654,13 @@ class AutoTrader:
         elif isinstance(sig, EMACrossSignal):
             ema_candles = (
                 candles_1h
-                if candles_1h and len(candles_1h) >= 200
+                if candles_1h and len(candles_1h) >= 50
                 else candles
             )
             closes = [c.close for c in ema_candles]
 
-            fast_period = sig.config.get("fast_period", 50)
-            slow_period = sig.config.get("slow_period", 200)
+            fast_period = sig.config.get("fast_ema", 20)
+            slow_period = sig.config.get("slow_ema", 50)
 
             fast_ema = Indicators.ema(closes, fast_period)
             slow_ema = Indicators.ema(closes, slow_period)
@@ -679,6 +679,17 @@ class AutoTrader:
                 curr_slow = slow_ema[-1]
             else:
                 return SignalResult(triggered=False, strategy_name=sig.name)
+
+            # Volume confirmation: current bar volume > 20-period avg
+            if sig.config.get("volume_confirmation", True):
+                volumes = [c.volume for c in ema_candles]
+                if len(volumes) >= 20:
+                    avg_vol = sum(volumes[-20:]) / 20
+                    if volumes[-1] <= avg_vol:
+                        return SignalResult(
+                            triggered=False, strategy_name=sig.name,
+                            reason="Volume below 20-period average",
+                        )
 
             rsi_series = Indicators.rsi(closes, 14)
             rsi = rsi_series[-1] if rsi_series else 50.0

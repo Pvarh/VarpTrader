@@ -1,4 +1,4 @@
-"""Crypto market data feed powered by CCXT."""
+"""Crypto market data feed powered by CCXT (REST) + Binance WebSocket (live)."""
 
 from __future__ import annotations
 
@@ -57,11 +57,38 @@ class CryptoFeed:
 
         self._exchange: ccxt.Exchange = exchange_class(config)
         self._exchange_id: str = exchange_id
+        self._ws: Any = None   # BinanceWebSocket, set by start_stream()
 
         logger.info(
             "crypto_feed_initialised | exchange={exchange} authenticated={authenticated}",
             exchange=exchange_id,
             authenticated=api_key is not None,
+        )
+
+    # ------------------------------------------------------------------
+    # WebSocket streaming
+    # ------------------------------------------------------------------
+    def start_stream(self, symbols: list[str], timeframe: str = "5m") -> None:
+        """Start a native Binance WebSocket for real-time prices and candles.
+
+        Prices received via the WebSocket are cached and returned by
+        :meth:`get_latest_price` without any REST round-trip.
+        Closed kline candles are accumulated in a rolling buffer accessible
+        via the underlying :class:`~data.binance_ws.BinanceWebSocket`.
+
+        Parameters
+        ----------
+        symbols:
+            Trading pairs e.g. ``["BTC/USDT", "ETH/USDT"]``.
+        timeframe:
+            Kline timeframe to subscribe to (default ``"5m"``).
+        """
+        from data.binance_ws import BinanceWebSocket
+
+        self._ws = BinanceWebSocket()
+        self._ws.start(symbols, timeframe=timeframe)
+        logger.info(
+            "crypto_feed_ws_started | symbols={} timeframe={}", symbols, timeframe
         )
 
     # ------------------------------------------------------------------
@@ -140,10 +167,12 @@ class CryptoFeed:
     # Latest price
     # ------------------------------------------------------------------
     def get_latest_price(self, symbol: str) -> float:
-        """Get current ticker price.
+        """Get current price — WebSocket cache first, REST fallback.
 
-        Uses the exchange's ``fetch_ticker`` endpoint and returns the
-        ``last`` traded price.
+        When a WebSocket stream is running (started via :meth:`start_stream`)
+        the price is returned directly from the in-memory cache with no
+        network latency.  If the WebSocket has not received a price yet,
+        the method falls back to a ``fetch_ticker`` REST call.
 
         Parameters
         ----------
@@ -155,6 +184,17 @@ class CryptoFeed:
         float
             Latest traded price.  Returns ``0.0`` on error.
         """
+        # Fast path: WebSocket cache
+        if self._ws is not None:
+            ws_price = self._ws.get_latest_price(symbol)
+            if ws_price > 0:
+                logger.debug(
+                    "latest_price_ws | symbol={symbol} price={price}",
+                    symbol=symbol, price=ws_price,
+                )
+                return ws_price
+
+        # Slow path: REST fallback
         try:
             ticker: dict[str, Any] = self._exchange.fetch_ticker(symbol)
             price = float(ticker["last"])

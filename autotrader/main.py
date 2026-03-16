@@ -463,9 +463,14 @@ class AutoTrader:
         self, symbol: str, account_value: float, current_positions: int
     ) -> None:
         """Evaluate all enabled signals for a single crypto symbol."""
-        candles_5m = self.crypto_feed.get_historical_bars(
-            symbol, timeframe="5m", limit=200
-        )
+        # Prefer WebSocket candle buffer (no REST call), fall back to REST
+        ws = getattr(self.crypto_feed, "_ws", None)
+        if ws is not None and ws.is_ready(symbol, min_candles=55):
+            candles_5m = ws.get_recent_candles(symbol, 200)
+        else:
+            candles_5m = self.crypto_feed.get_historical_bars(
+                symbol, timeframe="5m", limit=200
+            )
         if not candles_5m:
             return
 
@@ -1229,6 +1234,11 @@ def run_live(args) -> None:
     stock_symbols = trader.config.get("watchlist", {}).get("stocks", [])
     if stock_symbols:
         trader.stock_feed.start_stream(stock_symbols)
+
+    # -- Start Binance WebSocket for real-time crypto prices ---------------
+    crypto_symbols = trader.config.get("watchlist", {}).get("crypto", [])
+    if crypto_symbols:
+        trader.crypto_feed.start_stream(crypto_symbols, timeframe="5m")
 
     # -- Parse nightly analysis time from config["analysis"]["nightly_run_time"]
     nightly_time = trader.config.get("analysis", {}).get(

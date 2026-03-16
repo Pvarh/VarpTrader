@@ -6,11 +6,13 @@ resulting report to overseer/reports/YYYY-MM-DD_HH.txt.
 
 Usage:
     cd autotrader
-    python -m overseer.run_overseer
+    python -m overseer.run_overseer               # full run (requires claude CLI)
+    python -m overseer.run_overseer --context-only # print context to stdout and exit
 """
 
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -146,6 +148,20 @@ if __name__ == "__main__":
         retention="14 days",
         level="DEBUG",
     )
+
+    parser = argparse.ArgumentParser(description="VarpTrader Overseer")
+    parser.add_argument(
+        "--context-only",
+        action="store_true",
+        help="Print assembled context to stdout and exit (no Claude call).",
+    )
+    args = parser.parse_args()
+
+    if args.context_only:
+        # Just output the context — used by the host wrapper script
+        context = build_context()
+        sys.stdout.write(context)
+        sys.exit(0)
 
     report = run_overseer()
     print("\n" + "=" * 60)

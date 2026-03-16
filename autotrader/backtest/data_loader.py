@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import csv
 import math
+import os
+import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -229,6 +231,157 @@ class HistoricalDataLoader:
         candles.sort(key=lambda c: c.timestamp)
         log.info("csv_data_loaded", candle_count=len(candles))
         return candles
+
+    # ------------------------------------------------------------------ #
+    # Polygon.io
+    # ------------------------------------------------------------------ #
+
+    def load_from_polygon(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        timeframe: str = "1d",
+        api_key: str | None = None,
+    ) -> list[OHLCV]:
+        """Download historical OHLCV data from Polygon.io REST API.
+
+        The free Polygon tier supports **daily** bars (``"1d"``) for the
+        previous two years.  Intraday bars (``"1m"``, ``"5m"``, ``"1h"``)
+        require a paid subscription.
+
+        Args:
+            symbol: Ticker symbol (e.g. ``'NVDA'``, ``'AAPL'``, ``'SPY'``).
+            start_date: Start date in ``'YYYY-MM-DD'`` format.
+            end_date: End date in ``'YYYY-MM-DD'`` format.
+            timeframe: Bar size — ``'1m'``, ``'5m'``, ``'15m'``, ``'1h'``,
+                ``'4h'``, or ``'1d'``.
+            api_key: Polygon API key.  Falls back to the
+                ``POLYGON_API_KEY`` environment variable.
+
+        Returns:
+            Chronologically sorted list of :class:`OHLCV` objects.
+
+        Raises:
+            ValueError: If *timeframe* is not recognised.
+            RuntimeError: If no API key is available.
+        """
+        try:
+            import requests  # type: ignore[import-untyped]
+        except ImportError:
+            raise ImportError("requests is required: pip install requests")
+
+        key = api_key or os.getenv("POLYGON_API_KEY", "")
+        if not key:
+            raise RuntimeError(
+                "No POLYGON_API_KEY found.  Pass api_key= or set the env var."
+            )
+
+        multiplier, timespan = self._parse_polygon_timeframe(timeframe)
+
+        log = logger.bind(
+            symbol=symbol, start=start_date, end=end_date, timeframe=timeframe,
+        )
+        log.info("downloading_polygon_data")
+
+        market = "crypto" if "/" in symbol else "stock"
+        # Polygon uses different ticker format for crypto
+        poly_ticker = symbol.replace("/", "") if market == "crypto" else symbol
+
+        url = (
+            f"https://api.polygon.io/v2/aggs/ticker/{poly_ticker}"
+            f"/range/{multiplier}/{timespan}/{start_date}/{end_date}"
+        )
+        params = {
+            "adjusted": "true",
+            "sort": "asc",
+            "limit": 50000,
+            "apiKey": key,
+        }
+
+        candles: list[OHLCV] = []
+        next_url: str | None = url
+
+        while next_url:
+            try:
+                resp = requests.get(next_url, params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+            except Exception:
+                log.exception("polygon_request_failed")
+                break
+
+            status = data.get("status", "")
+            if status not in ("OK", "DELAYED"):
+                log.warning(
+                    "polygon_bad_status | status={} message={}",
+                    status, data.get("message", ""),
+                )
+                break
+
+            for bar in data.get("results", []):
+                ts = datetime.fromtimestamp(bar["t"] / 1000)
+                candles.append(
+                    OHLCV(
+                        timestamp=ts,
+                        open=float(bar["o"]),
+                        high=float(bar["h"]),
+                        low=float(bar["l"]),
+                        close=float(bar["c"]),
+                        volume=float(bar["v"]),
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        market=market,
+                        vwap=float(bar.get("vw", 0)) or None,
+                    )
+                )
+
+            # Polygon paginates via "next_url" field
+            next_url = data.get("next_url")
+            if next_url:
+                params = {"apiKey": key}   # next_url already has other params
+                time.sleep(0.2)            # respect rate limit
+
+        candles.sort(key=lambda c: c.timestamp)
+        log.info("polygon_data_loaded | count={}", len(candles))
+        return candles
+
+    @staticmethod
+    def _parse_polygon_timeframe(timeframe: str) -> tuple[int, str]:
+        """Convert a timeframe string to a (multiplier, timespan) tuple.
+
+        Args:
+            timeframe: Human-readable timeframe (e.g. ``'5m'``, ``'1h'``,
+                ``'1d'``).
+
+        Returns:
+            ``(multiplier, timespan)`` accepted by the Polygon aggregates
+            endpoint (e.g. ``(5, 'minute')`` for ``'5m'``).
+
+        Raises:
+            ValueError: For unrecognised timeframe strings.
+        """
+        _MAP: dict[str, tuple[int, str]] = {
+            "1m":  (1,  "minute"),
+            "5m":  (5,  "minute"),
+            "15m": (15, "minute"),
+            "30m": (30, "minute"),
+            "1h":  (1,  "hour"),
+            "4h":  (4,  "hour"),
+            "1d":  (1,  "day"),
+        }
+        if timeframe in _MAP:
+            return _MAP[timeframe]
+
+        # Dynamic parse
+        if timeframe.endswith("m"):
+            return (int(timeframe[:-1]), "minute")
+        if timeframe.endswith("h"):
+            return (int(timeframe[:-1]), "hour")
+        if timeframe.endswith("d"):
+            return (int(timeframe[:-1]), "day")
+
+        raise ValueError(f"Unsupported timeframe for Polygon: {timeframe}")
 
     # ------------------------------------------------------------------ #
     # Resample

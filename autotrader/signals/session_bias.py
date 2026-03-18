@@ -20,19 +20,28 @@ from signals.indicators import Indicators
 
 
 class SessionBias:
-    """Daily directional bias from 4h EMA alignment."""
+    """Daily directional bias from 4h EMA alignment.
+
+    Re-evaluates every 2 hours or on explicit reset.
+    """
 
     def __init__(self) -> None:
         self._bias: str = "neutral"
-        self._bias_date: str = ""  # ISO date when bias was last set
+        self._last_eval_time: float = 0.0  # Unix timestamp of last evaluation
 
     @property
     def bias(self) -> str:
         """Current session bias: ``'long'``, ``'short'``, or ``'neutral'``."""
         return self._bias
 
+    def force_reevaluate(self) -> None:
+        """Force a fresh evaluation on the next evaluate() call."""
+        self._last_eval_time = 0.0
+
     def evaluate(self, candles_4h: list[OHLCV]) -> str:
-        """Compute and cache the daily bias.
+        """Compute and cache the session bias.
+
+        Re-evaluates every 2 hours or if force_reevaluate() was called.
 
         Parameters
         ----------
@@ -44,15 +53,15 @@ class SessionBias:
         str
             One of ``"long"``, ``"short"``, ``"neutral"``.
         """
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = time.time()
 
-        # Only re-evaluate once per day
-        if self._bias_date == today:
+        # Re-evaluate every 2 hours
+        if now - self._last_eval_time < 7200:  # 7200 seconds = 2 hours
             return self._bias
 
         if not candles_4h or len(candles_4h) < 50:
             self._bias = "neutral"
-            self._bias_date = today
+            self._last_eval_time = now
             return self._bias
 
         closes = [c.close for c in candles_4h]
@@ -73,14 +82,13 @@ class SessionBias:
         else:
             self._bias = "neutral"
 
-        self._bias_date = today
+        self._last_eval_time = now
 
         logger.info(
-            "session_bias_set | bias={bias} ema20={ema20} ema50={ema50} date={date}",
+            "session_bias_set | bias={bias} ema20={ema20} ema50={ema50}",
             bias=self._bias,
             ema20=round(curr_ema20, 4),
             ema50=round(curr_ema50, 4),
-            date=today,
         )
 
         return self._bias

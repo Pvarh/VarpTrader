@@ -237,11 +237,15 @@ class AutoTrader:
         )
         self.session_bias = SessionBias()
 
+        # -- Regime change tracking ------------------------------------------
+        self._last_regime: str | None = None  # Track regime changes to reset session bias
+
         # -- Trade lifecycle -------------------------------------------------
         self.trade_manager = TradeManager()
 
         # -- State -----------------------------------------------------------
         self._daily_trade_count = 0
+        self._in_flight_symbols: set[str] = set()  # Track symbols being processed in current scan cycle
         self._running = True
         self._start_time = time.time()
         self._last_signal_time = time.time()
@@ -290,6 +294,9 @@ class AutoTrader:
         if not self._running or self.kill_switch.halted:
             return
         logger.info("scanning_stocks")
+
+        # Clear in-flight symbols at start of scan cycle
+        self._in_flight_symbols.clear()
 
         if self.paper_trade and self.paper_portfolio:
             account_value = self.paper_portfolio.equity
@@ -343,6 +350,11 @@ class AutoTrader:
         # -- Regime detection & session bias (use 1h candles) ----------------
         regime = self.regime_detector.detect(candles_1h or candles_5m)
         if candles_1h and len(candles_1h) >= 50:
+            # Force re-evaluation if regime changed
+            if regime != self._last_regime:
+                self._last_regime = regime
+                self.session_bias.force_reevaluate()
+                logger.info("regime_changed | old={} new={}", self._last_regime or '?', regime)
             self.session_bias.evaluate(candles_1h)
 
         whale_flag = 0
@@ -360,6 +372,25 @@ class AutoTrader:
                 )
                 if not result.triggered:
                     continue
+
+                # -- Fast VWAP pre-check ----------------------------------------
+                # Block longs below 1h VWAP, shorts above 1h VWAP
+                if candles_1h and len(candles_1h) >= 10 and result.direction:
+                    vwap_series = Indicators.vwap(candles_1h)
+                    if vwap_series:
+                        vwap_1h = vwap_series[-1]
+                        if result.direction == SignalDirection.LONG and current_price < vwap_1h:
+                            logger.info(
+                                "vwap_blocked_long | symbol={} strategy={} price={:.4f} vwap={:.4f}",
+                                symbol, sig.name, current_price, vwap_1h,
+                            )
+                            continue
+                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h:
+                            logger.info(
+                                "vwap_blocked_short | symbol={} strategy={} price={:.4f} vwap={:.4f}",
+                                symbol, sig.name, current_price, vwap_1h,
+                            )
+                            continue
 
                 # -- Trend filter gate --------------------------------------
                 if not self._regime_allows(sig.name, result.direction, regime):
@@ -408,6 +439,9 @@ class AutoTrader:
         if not self._running or self.kill_switch.halted:
             return
         logger.info("scanning_crypto")
+
+        # Clear in-flight symbols at start of scan cycle
+        self._in_flight_symbols.clear()
 
         if self.paper_trade and self.paper_portfolio:
             account_value = self.paper_portfolio.equity
@@ -486,6 +520,11 @@ class AutoTrader:
         # -- Regime detection & session bias ---------------------------------
         regime = self.regime_detector.detect(candles_1h or candles_5m)
         if candles_1h and len(candles_1h) >= 50:
+            # Force re-evaluation if regime changed
+            if regime != self._last_regime:
+                self._last_regime = regime
+                self.session_bias.force_reevaluate()
+                logger.info("regime_changed | old={} new={}", self._last_regime or '?', regime)
             self.session_bias.evaluate(candles_1h)
 
         whale_flag = 0
@@ -506,6 +545,25 @@ class AutoTrader:
                 )
                 if not result.triggered:
                     continue
+
+                # -- Fast VWAP pre-check ----------------------------------------
+                # Block longs below 1h VWAP, shorts above 1h VWAP
+                if candles_1h and len(candles_1h) >= 10 and result.direction:
+                    vwap_series = Indicators.vwap(candles_1h)
+                    if vwap_series:
+                        vwap_1h = vwap_series[-1]
+                        if result.direction == SignalDirection.LONG and current_price < vwap_1h:
+                            logger.info(
+                                "vwap_blocked_long | symbol={} strategy={} price={:.4f} vwap={:.4f}",
+                                symbol, sig.name, current_price, vwap_1h,
+                            )
+                            continue
+                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h:
+                            logger.info(
+                                "vwap_blocked_short | symbol={} strategy={} price={:.4f} vwap={:.4f}",
+                                symbol, sig.name, current_price, vwap_1h,
+                            )
+                            continue
 
                 # -- Trend filter gate --------------------------------------
                 if not self._regime_allows(sig.name, result.direction, regime):
@@ -778,6 +836,17 @@ class AutoTrader:
         """Validate, size, execute, and journal a triggered signal."""
         if result.direction is None:
             return
+
+        # In-memory duplicate guard: prevent multiple strategies from
+        # opening the same symbol in the same scan cycle
+        if symbol in self._in_flight_symbols:
+            logger.info(
+                "duplicate_blocked_in_memory | symbol={} strategy={}",
+                symbol, result.strategy_name,
+            )
+            return
+        # Mark this symbol as in-flight immediately
+        self._in_flight_symbols.add(symbol)
 
         if not self.reward_gate.check(
             result.entry_price, result.stop_loss, result.take_profit

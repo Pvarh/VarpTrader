@@ -163,7 +163,6 @@ def run_overseer(deep: bool = False, model: str | None = None) -> str:
         result = subprocess.run(
             [
                 "claude", "--print",
-                "--dangerously-skip-permissions",
                 "--model", resolved_model,
                 "-p", prompt,
             ],

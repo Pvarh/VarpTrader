@@ -25,7 +25,7 @@
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Realized P&L</div>
         <div class="text-lg font-bold {% if daily_pnl > 0 %}text-green-400{% elif daily_pnl < 0 %}text-red-400{% else %}text-gray-500{% endif %}" id="dailyPnl">
-            {% if daily_pnl >= 0 %}+{% endif %}${{ "%.2f"|format(daily_pnl|abs) }}
+            {% if daily_pnl >= 0 %}+{% else %}-{% endif %}${{ "%.2f"|format(daily_pnl|abs) }}
         </div>
     </div>
     <!-- Unrealized P&L -->
@@ -56,6 +56,33 @@
 </div>
 
 <div class="px-4 pb-8 flex flex-col gap-4">
+    {% if paper_mode %}
+    <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
+        <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
+            <span>Manual Paper Trade</span>
+            <span class="text-[10px] text-gray-500">Buy opens a manual long. Sell closes the selected open position.</span>
+        </div>
+        <div class="p-4 flex flex-col md:flex-row gap-3 md:items-end">
+            <div class="flex-1">
+                <label for="manualTradeSymbol" class="block text-[10px] text-gray-500 uppercase tracking-wider mb-1">Symbol</label>
+                <select id="manualTradeSymbol" class="w-full bg-dark-900 border border-dark-600 rounded px-3 py-2 text-sm text-white">
+                    {% for symbol in manual_symbols %}
+                    <option value="{{ symbol }}">{{ symbol }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="flex gap-2">
+                <button type="button" onclick="submitManualOrder('buy')" class="px-4 py-2 rounded text-xs font-semibold uppercase bg-green-400/10 text-green-400 hover:bg-green-400/20">
+                    Buy
+                </button>
+                <button type="button" onclick="submitManualOrder('sell')" class="px-4 py-2 rounded text-xs font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">
+                    Sell / Close
+                </button>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
     <!-- Equity Curve -->
     <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
         <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
@@ -86,6 +113,7 @@
                         <th class="text-right px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">Current</th>
                         <th class="text-right px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">Value</th>
                         <th class="text-right px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">P&L</th>
+                        {% if paper_mode %}<th class="text-right px-4 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">Action</th>{% endif %}
                     </tr>
                 </thead>
                 <tbody id="portfolioPositionsBody">
@@ -107,10 +135,21 @@
                                 {% if p.unrealized_pl > 0 %}text-green-400{% elif p.unrealized_pl < 0 %}text-red-400{% else %}text-gray-500{% endif %}">
                                 {% if p.unrealized_pl >= 0 %}+{% endif %}${{ "%.2f"|format(p.unrealized_pl|abs) }}
                             </td>
+                            {% if paper_mode %}
+                            <td class="px-4 py-2 text-right">
+                                <button
+                                    type="button"
+                                    onclick='closeDashboardPosition({{ p.symbol|tojson }})'
+                                    class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20"
+                                >
+                                    Close
+                                </button>
+                            </td>
+                            {% endif %}
                         </tr>
                         {% endfor %}
                     {% else %}
-                        <tr><td colspan="7" class="px-4 py-6 text-center text-gray-500 italic">No open positions</td></tr>
+                        <tr><td colspan="{% if paper_mode %}8{% else %}7{% endif %}" class="px-4 py-6 text-center text-gray-500 italic">No open positions</td></tr>
                     {% endif %}
                 </tbody>
             </table>
@@ -132,6 +171,7 @@
                             <th class="text-right px-3 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">Entry</th>
                             <th class="text-right px-3 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">SL</th>
                             <th class="text-right px-3 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">TP</th>
+                            {% if paper_mode %}<th class="text-right px-3 py-2 text-[10px] text-gray-500 uppercase tracking-wider font-medium">Action</th>{% endif %}
                         </tr>
                     </thead>
                     <tbody id="openTradesBody">
@@ -149,10 +189,21 @@
                                 <td class="px-3 py-2 text-right">{{ "%.4f"|format(t.entry_price) }}</td>
                                 <td class="px-3 py-2 text-right text-red-400/70">{{ "%.4f"|format(t.stop_loss) }}</td>
                                 <td class="px-3 py-2 text-right text-green-400/70">{{ "%.4f"|format(t.take_profit) }}</td>
+                                {% if paper_mode %}
+                                <td class="px-3 py-2 text-right">
+                                    <button
+                                        type="button"
+                                        onclick='closeDashboardPosition({{ t.symbol|tojson }})'
+                                        class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20"
+                                    >
+                                        Close
+                                    </button>
+                                </td>
+                                {% endif %}
                             </tr>
                             {% endfor %}
                         {% else %}
-                            <tr><td colspan="6" class="px-3 py-6 text-center text-gray-500 italic">No open trades</td></tr>
+                            <tr><td colspan="{% if paper_mode %}7{% else %}6{% endif %}" class="px-3 py-6 text-center text-gray-500 italic">No open trades</td></tr>
                         {% endif %}
                     </tbody>
                 </table>
@@ -298,6 +349,29 @@
     function fmt(v) { return v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
     function fmtPnl(v) { return (v >= 0 ? '+' : '') + '$' + fmt(Math.abs(v)); }
     function pnlClass(v) { return v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-500'; }
+    const paperMode = {{ 'true' if paper_mode else 'false' }};
+    function getDashboardApiKey() {
+        const existing = localStorage.getItem('dashboardApiKey') || '';
+        if (existing) return existing;
+        const entered = prompt('Enter Dashboard API Key (leave blank if dashboard auth is disabled):') || '';
+        if (entered) localStorage.setItem('dashboardApiKey', entered);
+        return entered;
+    }
+    async function apiFetch(url, options) {
+        const cfg = Object.assign({}, options || {});
+        cfg.headers = Object.assign({}, cfg.headers || {});
+        const stored = localStorage.getItem('dashboardApiKey');
+        if (stored) cfg.headers['X-API-Key'] = stored;
+        let resp = await fetch(url, cfg);
+        if (resp.status === 403) {
+            const entered = prompt('Enter Dashboard API Key:') || '';
+            if (!entered) return resp;
+            localStorage.setItem('dashboardApiKey', entered);
+            cfg.headers['X-API-Key'] = entered;
+            resp = await fetch(url, cfg);
+        }
+        return resp;
+    }
     function sideSpan(s) {
         const c = s === 'long' ? 'bg-green-400/10 text-green-400' : 'bg-red-400/10 text-red-400';
         return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase ' + c + '">' + s + '</span>';
@@ -306,6 +380,44 @@
         const m = {win:'bg-green-400/10 text-green-400', loss:'bg-red-400/10 text-red-400', open:'bg-yellow-400/10 text-yellow-400'};
         const c = m[o] || 'bg-dark-900 text-gray-500';
         return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase ' + c + '">' + o + '</span>';
+    }
+    function closeButton(symbol, padded) {
+        if (!paperMode) return '';
+        const pad = padded === 'compact' ? 'px-3 py-2' : 'px-4 py-2';
+        return '<td class="' + pad + ' text-right">' +
+            '<button type="button" onclick=\'closeDashboardPosition(' + JSON.stringify(symbol) + ')\' class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">Close</button>' +
+            '</td>';
+    }
+    async function submitManualOrder(action) {
+        const select = document.getElementById('manualTradeSymbol');
+        const symbol = select ? select.value : '';
+        if (!symbol) {
+            alert('Select a symbol first.');
+            return;
+        }
+        try {
+            const resp = await apiFetch('/orders/manual', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: action, symbol: symbol }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || 'Request failed');
+            window.location.reload();
+        } catch (err) {
+            alert((action === 'buy' ? 'Buy' : 'Sell') + ' failed: ' + err.message);
+        }
+    }
+    async function closeDashboardPosition(symbol) {
+        if (!confirm('Close ' + symbol + '?')) return;
+        try {
+            const resp = await apiFetch('/positions/close/' + encodeURIComponent(symbol), { method: 'POST' });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.detail || 'Close failed');
+            window.location.reload();
+        } catch (err) {
+            alert('Close failed: ' + err.message);
+        }
     }
 
     window.onPnlUpdate = function(data) {
@@ -351,7 +463,7 @@
         if (data.portfolio_positions) {
             var tbody = document.getElementById('portfolioPositionsBody');
             if (!data.portfolio_positions.length) {
-                tbody.innerHTML = '<tr><td colspan="7" class="px-4 py-6 text-center text-gray-500 italic">No open positions</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="' + (paperMode ? '8' : '7') + '" class="px-4 py-6 text-center text-gray-500 italic">No open positions</td></tr>';
             } else {
                 tbody.innerHTML = data.portfolio_positions.map(function(p) {
                     var upl = p.unrealized_pl || 0;
@@ -363,6 +475,7 @@
                         '<td class="px-4 py-2 text-right text-gray-400">--</td>' +
                         '<td class="px-4 py-2 text-right">$' + fmt(p.market_value) + '</td>' +
                         '<td class="px-4 py-2 text-right font-semibold ' + pnlClass(upl) + '">' + fmtPnl(upl) + '</td>' +
+                        closeButton(p.symbol, 'wide') +
                     '</tr>';
                 }).join('');
             }
@@ -372,7 +485,7 @@
         if (data.open_trades) {
             var tbody2 = document.getElementById('openTradesBody');
             if (!data.open_trades.length) {
-                tbody2.innerHTML = '<tr><td colspan="6" class="px-3 py-6 text-center text-gray-500 italic">No open trades</td></tr>';
+                tbody2.innerHTML = '<tr><td colspan="' + (paperMode ? '7' : '6') + '" class="px-3 py-6 text-center text-gray-500 italic">No open trades</td></tr>';
             } else {
                 tbody2.innerHTML = data.open_trades.map(function(t) {
                     return '<tr class="border-b border-dark-600 last:border-0 hover:bg-dark-700">' +
@@ -382,6 +495,7 @@
                         '<td class="px-3 py-2 text-right">' + Number(t.entry_price).toFixed(4) + '</td>' +
                         '<td class="px-3 py-2 text-right text-red-400/70">' + Number(t.stop_loss).toFixed(4) + '</td>' +
                         '<td class="px-3 py-2 text-right text-green-400/70">' + Number(t.take_profit).toFixed(4) + '</td>' +
+                        closeButton(t.symbol, 'compact') +
                     '</tr>';
                 }).join('');
             }

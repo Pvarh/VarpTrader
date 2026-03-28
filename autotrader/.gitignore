@@ -29,3 +29,15 @@ logs/
 # OS
 Thumbs.db
 .DS_Store
+
+# Runtime reports & logs
+overseer/reports/
+overseer/change_log.json
+overseer/strategy_log.json
+session_summary.txt
+config.json.bak_*
+
+# DB WAL / backups
+data/trades.db-shm
+data/trades.db-wal
+data/backups/

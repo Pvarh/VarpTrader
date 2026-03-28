@@ -204,7 +204,7 @@ class TestRegimeAllows:
             "rsi_momentum", SignalDirection.LONG, "trending_up"
         ) is True
 
-    def test_bollinger_fade_only_ranging(self) -> None:
+    def test_bollinger_fade_is_ranging_or_trend_aligned(self) -> None:
         from main import AutoTrader
 
         assert AutoTrader._regime_allows(
@@ -214,8 +214,14 @@ class TestRegimeAllows:
             "bollinger_fade", SignalDirection.SHORT, "trending_up"
         ) is False
         assert AutoTrader._regime_allows(
+            "bollinger_fade", SignalDirection.LONG, "trending_up"
+        ) is True
+        assert AutoTrader._regime_allows(
             "bollinger_fade", SignalDirection.LONG, "trending_down"
         ) is False
+        assert AutoTrader._regime_allows(
+            "bollinger_fade", SignalDirection.SHORT, "trending_down"
+        ) is True
 
     def test_ema_cross_always_allowed(self) -> None:
         from main import AutoTrader

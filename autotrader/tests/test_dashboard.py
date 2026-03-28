@@ -4,7 +4,8 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -241,6 +242,72 @@ class TestDashboardPage:
         assert "<canvas" in body
         assert "equityChart" in body
 
+    def test_dashboard_negative_daily_pnl_keeps_minus_sign(self, client):
+        import dashboard.router as router_module
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%dT12:00:00+00:00")
+        conn = router_module._db._get_connection()
+        conn.execute(
+            "UPDATE trades SET exit_timestamp = ?, pnl = ? WHERE symbol = ?",
+            (today, -42.5, "MSFT"),
+        )
+        conn.commit()
+
+        resp = client.get("/")
+        body = resp.text
+        assert "-$" in body
+
+    def test_dashboard_respects_paper_trade_env_for_mode_badge(self, client):
+        with patch.dict(os.environ, {"PAPER_TRADE": "false"}):
+            resp = client.get("/")
+        body = resp.text
+        assert "LIVE" in body
+
+    def test_dashboard_recent_trades_are_sorted_by_latest_activity(self, client):
+        import dashboard.router as router_module
+
+        conn = router_module._db._get_connection()
+        conn.execute(
+            "UPDATE trades SET exit_timestamp = ? WHERE symbol = ?",
+            ("2099-01-01T00:00:00+00:00", "AAPL"),
+        )
+        conn.commit()
+
+        resp = client.get("/")
+        body = resp.text
+        recent_idx = body.index("Recent Trades")
+        aapl_idx = body.index("AAPL", recent_idx)
+        msft_idx = body.index("MSFT", recent_idx)
+        assert aapl_idx < msft_idx
+
+    def test_dashboard_shows_close_button_in_paper_mode(self, client):
+        import dashboard.router as router_module
+
+        router_module._paper_executor = MagicMock()
+        router_module._paper_executor._portfolio = SimpleNamespace(cash=100000.0)
+        router_module._paper_executor.get_positions.return_value = [{
+            "symbol": "NVDA",
+            "qty": 3,
+            "side": "long",
+            "avg_entry_price": 800.0,
+            "market_value": 2400.0,
+            "unrealized_pl": 0.0,
+        }]
+
+        with patch.dict(os.environ, {"PAPER_TRADE": "true"}):
+            resp = client.get("/")
+
+        assert resp.status_code == 200
+        assert "Close" in resp.text
+
+    def test_dashboard_shows_manual_trade_panel_in_paper_mode(self, client):
+        with patch.dict(os.environ, {"PAPER_TRADE": "true"}):
+            resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Manual Paper Trade" in resp.text
+        assert "Buy" in resp.text
+        assert "Sell / Close" in resp.text
+
 
 class TestTradesPage:
     def test_trades_returns_html(self, client):
@@ -259,6 +326,22 @@ class TestTradesPage:
     def test_trades_with_outcome_filter(self, client):
         resp = client.get("/trades?outcome=win")
         assert resp.status_code == 200
+
+    def test_trades_page_uses_latest_activity_order(self, client):
+        import dashboard.router as router_module
+
+        conn = router_module._db._get_connection()
+        conn.execute(
+            "UPDATE trades SET exit_timestamp = ? WHERE symbol = ?",
+            ("2099-01-01T00:00:00+00:00", "AAPL"),
+        )
+        conn.commit()
+
+        resp = client.get("/trades")
+        body = resp.text
+        aapl_idx = body.index("<strong>AAPL</strong>")
+        msft_idx = body.index("<strong>MSFT</strong>")
+        assert aapl_idx < msft_idx
 
 
 class TestAnalysisPage:
@@ -318,6 +401,68 @@ class TestSignalsEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
+
+
+class TestDashboardActions:
+    def test_manual_buy_endpoint_opens_paper_position(self, client):
+        import dashboard.router as router_module
+
+        paper_executor = MagicMock()
+        paper_executor._portfolio = SimpleNamespace(equity=100000.0, cash=100000.0)
+        paper_executor.submit_market_order.return_value = {
+            "fill_price": 900.0,
+            "qty": "1",
+        }
+        router_module._paper_executor = paper_executor
+        router_module._config = {
+            "watchlist": {"stocks": ["NVDA"], "crypto": []},
+            "risk": {"position_size_pct": 0.005},
+        }
+        router_module._stock_feed = MagicMock()
+        router_module._stock_feed.get_latest_price.return_value = 900.0
+        router_module._crypto_feed = MagicMock()
+        router_module._order_validator = MagicMock()
+        router_module._order_validator.validate.return_value = (True, "")
+        router_module._kill_switch = SimpleNamespace(halted=False)
+        router_module._db.get_open_trades = MagicMock(return_value=[])
+        router_module._db.get_daily_trade_count = MagicMock(return_value=0)
+
+        with patch.dict(os.environ, {"PAPER_TRADE": "true", "DASHBOARD_API_KEY": ""}, clear=False):
+            resp = client.post("/orders/manual", json={"action": "buy", "symbol": "NVDA"})
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "opened"
+        paper_executor.submit_market_order.assert_called_once()
+
+    def test_close_position_endpoint_closes_paper_position(self, client):
+        import dashboard.router as router_module
+
+        paper_executor = MagicMock()
+        paper_executor.get_positions.return_value = [{
+            "symbol": "NVDA",
+            "qty": 3,
+            "side": "long",
+            "avg_entry_price": 800.0,
+            "market_value": 2400.0,
+            "unrealized_pl": 0.0,
+        }]
+        paper_executor.close_position.return_value = {
+            "fill_price": 800.0,
+            "pnl": 0.0,
+        }
+        router_module._paper_executor = paper_executor
+        router_module._config = {}
+
+        with patch.dict(os.environ, {"PAPER_TRADE": "true", "DASHBOARD_API_KEY": ""}, clear=False):
+            resp = client.post("/positions/close/NVDA")
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "closed"
+        paper_executor.close_position.assert_called_once_with(
+            symbol="NVDA",
+            market_price=800.0,
+            market="stock",
+        )
 
 
 # ---------------------------------------------------------------------------

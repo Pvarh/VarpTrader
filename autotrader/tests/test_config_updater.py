@@ -3,8 +3,8 @@
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -21,7 +21,7 @@ def sample_config() -> dict:
             "stop_loss_pct": 0.015,
             "position_size_pct": 0.02,
         },
-        "signals": {
+        "strategies": {
             "rsi_momentum": {
                 "rsi_oversold": 32,
                 "rsi_overbought": 68,
@@ -165,14 +165,14 @@ class TestAtomicConfigWrite:
         updater.apply_changes({})
         assert config_file.read_text() == original
 
-    def test_rsi_changes_written_to_signals_section(self, updater: ConfigUpdater, config_file: Path) -> None:
-        """RSI parameter changes should update the signals section."""
+    def test_rsi_changes_written_to_strategies_section(self, updater: ConfigUpdater, config_file: Path) -> None:
+        """RSI parameter changes should update the strategies section."""
         changes = {"rsi_oversold": 28, "rsi_overbought": 72}
         approved, _ = updater.validate_changes(changes)
         updater.apply_changes(approved)
         updated = json.loads(config_file.read_text())
-        assert updated["signals"]["rsi_momentum"]["rsi_oversold"] == 28
-        assert updated["signals"]["rsi_momentum"]["rsi_overbought"] == 72
+        assert updated["strategies"]["rsi_momentum"]["rsi_oversold"] == 28
+        assert updated["strategies"]["rsi_momentum"]["rsi_overbought"] == 72
 
     def test_concurrent_writes_dont_corrupt(self, updater: ConfigUpdater, config_file: Path) -> None:
         """Sequential rapid writes should not corrupt the config file."""
@@ -183,3 +183,18 @@ class TestAtomicConfigWrite:
             updater.apply_changes(approved)
         result = json.loads(config_file.read_text())
         assert 0.005 <= result["risk"]["stop_loss_pct"] <= 0.05
+
+    def test_bind_mount_fallback_overwrites_in_place(
+        self, updater: ConfigUpdater, config_file: Path
+    ) -> None:
+        """EBUSY on rename should fall back to an in-place overwrite."""
+        approved = {"stop_loss_pct": 0.03}
+
+        with patch(
+            "analysis.config_updater.os.replace",
+            side_effect=OSError(16, "Device or resource busy"),
+        ):
+            updater.apply_changes(approved)
+
+        updated = json.loads(config_file.read_text())
+        assert updated["risk"]["stop_loss_pct"] == 0.03

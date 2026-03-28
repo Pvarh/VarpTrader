@@ -41,20 +41,23 @@ class BlockTradeDetector:
         stock_block_shares: int = 50_000,
         stock_block_usd: float = 2_000_000,
         flag_ttl_minutes: int = 15,
+        enabled: bool = True,
     ) -> None:
         self._api_key: str = api_key
         self._min_shares: int = stock_block_shares
         self._min_value: float = stock_block_usd
         self._flag_duration: int = flag_ttl_minutes * 60  # seconds
+        self._enabled: bool = bool(enabled)
         self._buy_flags: dict[str, float] = {}   # symbol -> expiry timestamp
         self._sell_flags: dict[str, float] = {}  # symbol -> expiry timestamp
         self._api_disabled: bool = False  # set True on 401/403 to stop spamming
 
         logger.info(
-            "block_trade_detector_initialised | stock_block_shares={stock_block_shares} stock_block_usd={stock_block_usd} flag_ttl_minutes={flag_ttl_minutes}",
+            "block_trade_detector_initialised | stock_block_shares={stock_block_shares} stock_block_usd={stock_block_usd} flag_ttl_minutes={flag_ttl_minutes} enabled={enabled}",
             stock_block_shares=stock_block_shares,
             stock_block_usd=stock_block_usd,
             flag_ttl_minutes=flag_ttl_minutes,
+            enabled=self._enabled,
         )
 
     # ------------------------------------------------------------------
@@ -73,6 +76,9 @@ class BlockTradeDetector:
             List of ticker symbols to scan (e.g. ``["AAPL", "TSLA"]``).
         """
         self._cleanup_expired()
+
+        if not self._enabled:
+            return
 
         if self._api_disabled:
             return
@@ -179,6 +185,8 @@ class BlockTradeDetector:
             ``True`` if a sell flag is active and has not expired.
         """
         self._cleanup_expired()
+        if not self._enabled:
+            return False
         return symbol in self._sell_flags
 
     def has_buy_flag(self, symbol: str) -> bool:
@@ -200,6 +208,8 @@ class BlockTradeDetector:
             ``True`` if a buy flag is active and has not expired.
         """
         self._cleanup_expired()
+        if not self._enabled:
+            return False
         return symbol in self._buy_flags
 
     # ------------------------------------------------------------------

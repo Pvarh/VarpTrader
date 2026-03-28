@@ -5,6 +5,7 @@ fundamentals, and recent price action, then asks Claude for a directional bias.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import tempfile
@@ -335,7 +336,12 @@ class SwingAdvisor:
     # ------------------------------------------------------------------
 
     def _write_weekly_bias(self, biases: list[dict]) -> None:
-        """Write biases to weekly_bias.json atomically (write tmp, rename)."""
+        """Write biases to weekly_bias.json.
+
+        Prefer atomic replace, but fall back to in-place overwrite for
+        single-file bind mounts where replacing the mounted file returns
+        EBUSY/EXDEV.
+        """
         now = datetime.now(timezone.utc)
         data = {
             "week_start": now.strftime("%Y-%m-%d"),
@@ -353,7 +359,14 @@ class SwingAdvisor:
 
             # Atomic rename (works on POSIX; on Windows this overwrites)
             tmp = Path(tmp_path)
-            tmp.replace(target)
+            try:
+                tmp.replace(target)
+            except OSError as exc:
+                if exc.errno not in {errno.EBUSY, errno.EXDEV, errno.EPERM, errno.EACCES}:
+                    raise
+                with open(target, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                    f.write("\n")
             logger.info("weekly_bias_written | path={path}", path=str(target))
         except Exception as exc:
             logger.error(

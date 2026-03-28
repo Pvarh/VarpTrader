@@ -1,7 +1,8 @@
-"""LLM-based trading advisor using the Anthropic Claude API.
+"""Claude-backed nightly tuning advisor helpers.
 
-Sends performance analytics to Claude and parses structured JSON
-recommendations for config parameter adjustments.
+This module provides prompt construction and response parsing for the
+nightly analysis flow. Direct API usage is optional; on the VPS we route
+the Claude call through the host login session instead.
 """
 
 from __future__ import annotations
@@ -9,19 +10,18 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import anthropic
 from loguru import logger
 
 
 class LLMAdvisor:
-    """Request config-tuning recommendations from Claude based on trade data."""
+    """Prompt/parse helper for nightly config recommendations."""
 
     SYSTEM_PROMPT: str = (
         "You are a quantitative trading analyst. Review this trading performance "
         "data and suggest specific, numeric config parameter adjustments. "
-        "Output ONLY valid JSON matching the config.json schema. "
+        "Output ONLY valid JSON matching the requested flat schema. "
         "Do not suggest changes outside the allowed bounds. "
-        "Be conservative -- only suggest changes when win rate difference is > 10%."
+        "Be conservative and only suggest changes backed by the data."
     )
 
     ALLOWED_PARAMS: set[str] = {
@@ -34,67 +34,108 @@ class LLMAdvisor:
     def __init__(
         self,
         api_key: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-4-6",
     ) -> None:
-        """Initialize the Anthropic client.
+        """Initialize the advisor metadata.
 
-        Args:
-            api_key: Anthropic API key.
-            model: Claude model identifier to use for recommendations.
+        ``api_key`` is retained for compatibility with the existing app
+        wiring, but the host-login flow does not use it.
         """
-        self.client = anthropic.Anthropic(api_key=api_key)
+        _ = api_key
         self.model = model
-        logger.info("llm_advisor_initialized | model={model}", model=self.model)
+        logger.info(
+            "llm_advisor_initialized | model={model}",
+            model=self.model,
+        )
 
-    def _build_user_prompt(self, performance_data: dict[str, Any]) -> str:
-        """Format the performance data into a user-message string.
+    @staticmethod
+    def _round_param(name: str, value: float) -> float:
+        if name in {"rsi_oversold", "rsi_overbought"}:
+            return round(value)
+        return round(value, 4)
 
-        Args:
-            performance_data: The full report dict produced by
-                :pyclass:`~analysis.analyzer.PerformanceAnalyzer`.
+    def _fallback_recommendations(
+        self,
+        performance_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Local compatibility fallback when the host Claude path is unavailable."""
+        total_trades = int(performance_data.get("total_trades", 0) or 0)
+        total_wins = int(performance_data.get("total_wins", 0) or 0)
+        total_pnl = float(performance_data.get("total_pnl", 0.0) or 0.0)
+        overall_win_rate = (total_wins / total_trades) if total_trades else 0.0
+        strategy_win_rates = performance_data.get("strategy_win_rates", {}) or {}
+        avg_pnl_per_strategy = performance_data.get("avg_pnl_per_strategy", {}) or {}
 
-        Returns:
-            A human-readable JSON string summarising the data, accompanied
-            by the allowed parameter bounds for the model's reference.
-        """
+        recommendations: dict[str, Any] = {}
+        if total_trades >= 30 and total_pnl < 0 and overall_win_rate <= 0.35:
+            recommendations["position_size_pct"] = 0.005
+        if total_trades >= 30 and total_pnl < 0 and overall_win_rate <= 0.25:
+            recommendations["stop_loss_pct"] = 0.01
+
+        rsi_wr = strategy_win_rates.get("rsi_momentum")
+        rsi_avg_pnl = avg_pnl_per_strategy.get("rsi_momentum")
+        if (
+            rsi_wr is not None
+            and rsi_avg_pnl is not None
+            and rsi_avg_pnl < 0
+            and rsi_wr <= max(0.10, overall_win_rate - 0.10)
+        ):
+            recommendations["rsi_oversold"] = 25
+            recommendations["rsi_overbought"] = 75
+
+        return {
+            key: self._round_param(key, float(value))
+            for key, value in recommendations.items()
+        }
+
+    @classmethod
+    def build_user_prompt(
+        cls,
+        performance_data: dict[str, Any],
+        current_values: dict[str, Any] | None = None,
+    ) -> str:
+        """Build the Claude user prompt for nightly analysis."""
         bounds_info = {
             "stop_loss_pct": {"min": 0.005, "max": 0.05},
             "position_size_pct": {"min": 0.005, "max": 0.03},
             "rsi_oversold": {"min": 20, "max": 40},
             "rsi_overbought": {"min": 60, "max": 80},
         }
-        prompt = (
+        current_values = current_values or {}
+        return (
             "Here is the recent trading performance data:\n\n"
             f"```json\n{json.dumps(performance_data, indent=2, default=str)}\n```\n\n"
+            "Current tunable values:\n\n"
+            f"```json\n{json.dumps(current_values, indent=2, default=str)}\n```\n\n"
             "Allowed parameter bounds:\n\n"
             f"```json\n{json.dumps(bounds_info, indent=2)}\n```\n\n"
-            "Based on this data, suggest parameter changes as a flat JSON "
-            "object with parameter names as keys and new numeric values. "
+            "Suggest parameter changes as a flat JSON object with parameter names as keys and new numeric values. "
             "Only include parameters you want to change. "
-            "Example: {\"stop_loss_pct\": 0.02, \"rsi_oversold\": 30}\n"
             "Output ONLY the JSON object, no additional text."
         )
-        return prompt
 
-    def _parse_response(self, raw_text: str) -> dict[str, Any]:
-        """Extract a JSON dict of recommendations from the model response.
+    @classmethod
+    def build_messages(
+        cls,
+        performance_data: dict[str, Any],
+        current_values: dict[str, Any] | None = None,
+    ) -> tuple[str, str]:
+        """Return the system and user prompt pair for Claude."""
+        return cls.SYSTEM_PROMPT, cls.build_user_prompt(
+            performance_data,
+            current_values=current_values,
+        )
 
-        Handles responses that may include markdown code fences or
-        extraneous text surrounding the JSON payload.
-
-        Args:
-            raw_text: Raw text from the Claude API response.
-
-        Returns:
-            Parsed dict of parameter recommendations.  Returns an empty
-            dict when parsing fails or the response is not valid JSON.
-        """
+    @classmethod
+    def parse_response(cls, raw_text: str) -> dict[str, Any]:
+        """Extract a JSON dict of recommendations from a Claude response."""
         text = raw_text.strip()
+        if not text:
+            logger.error("llm_response_empty")
+            return {}
 
-        # Strip markdown code fences if present
         if text.startswith("```"):
             lines = text.splitlines()
-            # Remove first line (```json or ```) and last line (```)
             start = 1
             end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
             text = "\n".join(lines[start:end]).strip()
@@ -102,7 +143,10 @@ class LLMAdvisor:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
-            logger.error("llm_response_parse_failed | raw_text={raw_text}", raw_text=raw_text[:500])
+            logger.error(
+                "llm_response_parse_failed | raw_text={raw_text}",
+                raw_text=raw_text[:500],
+            )
             return {}
 
         if not isinstance(parsed, dict):
@@ -112,73 +156,38 @@ class LLMAdvisor:
             )
             return {}
 
-        # Filter to only allowed parameter names
         filtered: dict[str, Any] = {}
         for key, value in parsed.items():
-            if key in self.ALLOWED_PARAMS:
-                try:
-                    filtered[key] = float(value)
-                except (TypeError, ValueError):
-                    logger.warning(
-                        "llm_recommendation_non_numeric | param={param} value={value}",
-                        param=key,
-                        value=value,
-                    )
-            else:
+            if key not in cls.ALLOWED_PARAMS:
                 logger.warning(
                     "llm_recommendation_unknown_param | param={param} value={value}",
                     param=key,
                     value=value,
                 )
-
-        return filtered
-
-    def get_recommendations(
-        self, performance_data: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Send performance stats to Claude and return suggested changes.
-
-        Args:
-            performance_data: Full report dict from
-                :pyfunc:`PerformanceAnalyzer.build_full_report`.
-
-        Returns:
-            Dict of parameter names to suggested numeric values.
-            Returns an empty dict on API errors or unparseable responses.
-        """
-        user_prompt = self._build_user_prompt(performance_data)
-
-        logger.info(
-            "llm_advisor_requesting_recommendations | model={model} data_keys={data_keys}",
-            model=self.model,
-            data_keys=list(performance_data.keys()),
-        )
-
-        try:
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=1024,
-                system=self.SYSTEM_PROMPT,
-                messages=[
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-        except anthropic.APIError:
-            logger.exception("llm_api_call_failed")
-            return {}
-
-        # Extract text from the first content block
-        if not message.content:
-            logger.error("llm_response_empty")
-            return {}
-
-        raw_text = message.content[0].text
-        logger.debug("llm_raw_response | text={text}", text=raw_text[:500])
-
-        recommendations = self._parse_response(raw_text)
+                continue
+            try:
+                filtered[key] = float(value)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "llm_recommendation_non_numeric | param={param} value={value}",
+                    param=key,
+                    value=value,
+                )
 
         logger.info(
             "llm_recommendations_received | recommendations={recommendations}",
+            recommendations=filtered,
+        )
+        return filtered
+
+    def get_recommendations(
+        self,
+        performance_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Compatibility fallback for non-host nightly paths."""
+        recommendations = self._fallback_recommendations(performance_data)
+        logger.info(
+            "llm_recommendations_received | mode=fallback recommendations={recommendations}",
             recommendations=recommendations,
         )
         return recommendations

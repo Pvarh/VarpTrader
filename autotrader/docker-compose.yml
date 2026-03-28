@@ -8,8 +8,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-      - ./config.json:/app/config.json:ro
-      - ./weekly_bias.json:/app/weekly_bias.json:ro
+      - ./config.json:/app/config.json
+      - ./weekly_bias.json:/app/weekly_bias.json
     ports:
       - "8000:8000"
     networks:

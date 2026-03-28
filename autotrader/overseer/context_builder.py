@@ -16,16 +16,22 @@ from typing import Any
 from loguru import logger
 
 from journal.db import TradeDatabase
+from overseer.change_memory import (
+    load_json_list,
+    summarize_change_log,
+    summarize_strategy_log,
+)
 from overseer.log_extractor import extract_events
 
 
 def _safe_read_json(path: str) -> dict:
     """Read a JSON file, returning empty dict on failure."""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception as exc:
         logger.warning("overseer_config_read_failed | path={} err={}", path, exc)
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _fmt_trade_row(t: dict) -> str:
@@ -81,6 +87,8 @@ def build_context(
     db_path: str = "data/trades.db",
     log_path: str = "logs/autotrader.log",
     config_path: str = "config.json",
+    change_log_path: str = "overseer/change_log.json",
+    strategy_log_path: str = "overseer/strategy_log.json",
 ) -> str:
     """Assemble the full overseer context for an LLM prompt.
 
@@ -92,7 +100,14 @@ def build_context(
     Returns:
         Formatted multi-line text string (target <6000 tokens).
     """
-    logger.info("overseer_building_context | db={} log={} config={}", db_path, log_path, config_path)
+    logger.info(
+        "overseer_building_context | db={} log={} config={} change_log={} strategy_log={}",
+        db_path,
+        log_path,
+        config_path,
+        change_log_path,
+        strategy_log_path,
+    )
 
     # 1. Structured log events (last 24h)
     events = extract_events(log_path=log_path, hours=24)
@@ -143,6 +158,10 @@ def build_context(
 
     # 3. Config
     config = _safe_read_json(config_path)
+
+    # 3b. Persistent overseer memory
+    change_log_entries = load_json_list(change_log_path)
+    strategy_log_entries = load_json_list(strategy_log_path)
 
     # 4. Per-strategy stats (7 days)
     strategy_stats = _compute_stats(closed_recent, "strategy")
@@ -234,6 +253,17 @@ def build_context(
         sections.append("\n--- CONFIG CHANGES (24h) ---")
         sections.append(_fmt_event_list(events["config_changes"]))
 
+    # Persistent overseer change memory
+    sections.append("\n--- CHANGE MEMORY SUMMARY ---")
+    sections.append(summarize_change_log(change_log_entries))
+    sections.append("\n--- FULL CHANGE LOG JSON ---")
+    sections.append(json.dumps(change_log_entries, indent=2))
+
+    sections.append("\n--- STRATEGY MEMORY SUMMARY ---")
+    sections.append(summarize_strategy_log(strategy_log_entries))
+    sections.append("\n--- FULL STRATEGY LOG JSON ---")
+    sections.append(json.dumps(strategy_log_entries, indent=2))
+
     # Errors / warnings
     sections.append(f"\n--- ERRORS/WARNINGS (24h, {len(events.get('errors', []))} total) ---")
     sections.append(_fmt_event_list(events.get("errors", []), max_items=15))
@@ -263,7 +293,7 @@ def build_context(
     context = "\n".join(sections)
 
     # Hard truncation safety net (~6000 tokens ~ 24000 chars)
-    max_chars = 24000
+    max_chars = 48000
     if len(context) > max_chars:
         context = context[:max_chars] + "\n\n... (context truncated to fit token budget)"
         logger.warning("overseer_context_truncated | chars={}", len(context))

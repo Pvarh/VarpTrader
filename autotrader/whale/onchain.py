@@ -60,19 +60,34 @@ class OnChainWhaleDetector:
         api_key: str,
         crypto_transfer_usd: float = 1_000_000,
         flag_ttl_minutes: int = 15,
+        min_sell_events: int = 3,
+        max_block_minutes: int = 30,
+        monitored_symbols: set[str] | None = None,
     ) -> None:
         self._api_key: str = api_key
         self._min_usd: float = crypto_transfer_usd
         self._flag_duration: int = flag_ttl_minutes * 60  # seconds
-        self._sell_pressure: dict[str, float] = {}   # symbol -> expiry
+        self._min_sell_events: int = max(1, int(min_sell_events))
+        self._max_block_duration: int = max_block_minutes * 60
+        self._monitored_symbols: set[str] | None = (
+            {symbol.upper() for symbol in monitored_symbols}
+            if monitored_symbols
+            else None
+        )
+        self._sell_pressure_events: dict[str, list[float]] = {}
+        self._sell_pressure_active_since: dict[str, float] = {}
+        self._accumulation_events: dict[str, list[float]] = {}
         self._accumulation: dict[str, float] = {}    # symbol -> expiry
         self._seen_tx: set[str] = set()
         self._seen_tx_last_clear: float = time.time()
 
         logger.info(
-            "onchain_whale_detector_initialised | crypto_transfer_usd={crypto_transfer_usd} flag_ttl_minutes={flag_ttl_minutes}",
+            "onchain_whale_detector_initialised | crypto_transfer_usd={crypto_transfer_usd} flag_ttl_minutes={flag_ttl_minutes} min_sell_events={min_sell_events} max_block_minutes={max_block_minutes} monitored_symbols={monitored_symbols}",
             crypto_transfer_usd=crypto_transfer_usd,
             flag_ttl_minutes=flag_ttl_minutes,
+            min_sell_events=self._min_sell_events,
+            max_block_minutes=max_block_minutes,
+            monitored_symbols=sorted(self._monitored_symbols) if self._monitored_symbols else "all",
         )
 
     # ------------------------------------------------------------------
@@ -117,7 +132,8 @@ class OnChainWhaleDetector:
                 logger.debug("no_whale_transactions")
                 return
 
-            expiry = time.time() + self._flag_duration
+            now_ts = time.time()
+            expiry = now_ts + self._flag_duration
 
             for tx in transactions:
                 symbol: str = tx.get("symbol", "").upper()
@@ -133,13 +149,38 @@ class OnChainWhaleDetector:
                 if not symbol:
                     continue
 
+                if self._monitored_symbols and symbol not in self._monitored_symbols:
+                    continue
+
                 if tx_hash in self._seen_tx:
                     continue
                 self._seen_tx.add(tx_hash)
 
-                if to_owner in _EXCHANGE_OWNERS:
-                    # Moving tokens *to* an exchange -> sell pressure
-                    self._sell_pressure[symbol] = expiry
+                from_exchange = from_owner in _EXCHANGE_OWNERS
+                to_exchange = to_owner in _EXCHANGE_OWNERS
+
+                if from_exchange and to_exchange:
+                    logger.debug(
+                        "whale_exchange_internal_transfer_ignored | symbol={symbol} amount_usd={amount_usd} from_owner={from_owner} to_owner={to_owner} tx_hash={tx_hash}",
+                        symbol=symbol,
+                        amount_usd=round(amount_usd, 2),
+                        from_owner=from_owner,
+                        to_owner=to_owner,
+                        tx_hash=tx_hash,
+                    )
+                    continue
+
+                if to_exchange:
+                    # Moving tokens *to* an exchange -> possible sell pressure.
+                    events = self._sell_pressure_events.setdefault(symbol, [])
+                    events.append(now_ts)
+                    self._sell_pressure_events[symbol] = [
+                        event_ts
+                        for event_ts in events
+                        if now_ts - event_ts <= self._flag_duration
+                    ]
+                    if len(self._sell_pressure_events[symbol]) >= self._min_sell_events:
+                        self._sell_pressure_active_since.setdefault(symbol, now_ts)
                     logger.warning(
                         "whale_sell_pressure_detected | symbol={symbol} amount_usd={amount_usd} from_owner={from_owner} to_owner={to_owner} tx_hash={tx_hash}",
                         symbol=symbol,
@@ -148,9 +189,18 @@ class OnChainWhaleDetector:
                         to_owner=to_owner,
                         tx_hash=tx_hash,
                     )
-                elif from_owner in _EXCHANGE_OWNERS:
+                elif from_exchange:
                     # Withdrawing tokens *from* an exchange -> accumulation
                     self._accumulation[symbol] = expiry
+                    acc_events = self._accumulation_events.setdefault(symbol, [])
+                    acc_events.append(now_ts)
+                    self._accumulation_events[symbol] = [
+                        event_ts
+                        for event_ts in acc_events
+                        if now_ts - event_ts <= self._flag_duration
+                    ]
+                    self._sell_pressure_events.pop(symbol, None)
+                    self._sell_pressure_active_since.pop(symbol, None)
                     logger.warning(
                         "whale_accumulation_detected | symbol={symbol} amount_usd={amount_usd} from_owner={from_owner} to_owner={to_owner} tx_hash={tx_hash}",
                         symbol=symbol,
@@ -196,7 +246,36 @@ class OnChainWhaleDetector:
             ``True`` if a sell-pressure flag is active and not expired.
         """
         self._cleanup_expired()
-        return symbol.upper() in self._sell_pressure
+        key = symbol.upper()
+        events = self._sell_pressure_events.get(key, [])
+        if len(events) < self._min_sell_events:
+            return False
+
+        accumulation_events = self._accumulation_events.get(key, [])
+        if len(events) <= len(accumulation_events):
+            logger.debug(
+                "sell_pressure_neutralized_by_accumulation | symbol={symbol} sell_events={sell_events} accumulation_events={accumulation_events}",
+                symbol=key,
+                sell_events=len(events),
+                accumulation_events=len(accumulation_events),
+            )
+            return False
+
+        active_since = self._sell_pressure_active_since.get(key)
+        if active_since is None:
+            self._sell_pressure_active_since[key] = events[self._min_sell_events - 1]
+            active_since = self._sell_pressure_active_since[key]
+
+        if time.time() - active_since > self._max_block_duration:
+            self._sell_pressure_events.pop(key, None)
+            self._sell_pressure_active_since.pop(key, None)
+            logger.info(
+                "sell_pressure_block_expired | symbol={symbol} max_block_minutes={minutes}",
+                symbol=key,
+                minutes=self._max_block_duration / 60,
+            )
+            return False
+        return True
 
     def has_accumulation_signal(self, symbol: str) -> bool:
         """Check if an accumulation signal is active for *symbol*.
@@ -224,13 +303,35 @@ class OnChainWhaleDetector:
     def _cleanup_expired(self) -> None:
         """Remove expired flags from both signal dictionaries."""
         now = time.time()
+        expired_sell: list[str] = []
+        for symbol, events in self._sell_pressure_events.items():
+            fresh = [
+                event_ts
+                for event_ts in events
+                if now - event_ts <= self._flag_duration
+            ]
+            if fresh:
+                self._sell_pressure_events[symbol] = fresh
+            else:
+                expired_sell.append(symbol)
+        for symbol in expired_sell:
+            self._sell_pressure_events.pop(symbol, None)
+            self._sell_pressure_active_since.pop(symbol, None)
+            logger.debug("sell_pressure_expired | symbol={symbol}", symbol=symbol)
 
-        expired_sell = [
-            s for s, exp in self._sell_pressure.items() if exp <= now
-        ]
-        for s in expired_sell:
-            del self._sell_pressure[s]
-            logger.debug("sell_pressure_expired | symbol={symbol}", symbol=s)
+        expired_acc_events: list[str] = []
+        for symbol, events in self._accumulation_events.items():
+            fresh = [
+                event_ts
+                for event_ts in events
+                if now - event_ts <= self._flag_duration
+            ]
+            if fresh:
+                self._accumulation_events[symbol] = fresh
+            else:
+                expired_acc_events.append(symbol)
+        for symbol in expired_acc_events:
+            self._accumulation_events.pop(symbol, None)
 
         expired_acc = [
             s for s, exp in self._accumulation.items() if exp <= now

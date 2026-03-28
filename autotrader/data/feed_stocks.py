@@ -1,10 +1,9 @@
 """Stock market data feed.
 
-Real-time prices come from the Alpaca market-data WebSocket (free IEX
-feed, 200 calls/min).  Historical OHLCV bars are fetched from the
-Polygon REST API when a key is configured, otherwise yfinance is used
-as a free fallback.  This separation avoids hammering low-rate-limit
-REST endpoints during live trading.
+Real-time prices come from the Alpaca market-data WebSocket. Historical
+bars prefer Polygon, but the Polygon path is guarded by a local
+5-calls-per-minute budget with TTL caches so the app stays inside low
+rate-limit plans and falls back cleanly when needed.
 """
 
 from __future__ import annotations
@@ -12,6 +11,8 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -24,14 +25,7 @@ from journal.models import OHLCV
 
 
 class StockFeed:
-    """Unified stock data feed: Alpaca WebSocket for live, Polygon/yfinance for historical.
-
-    Call :meth:`start_stream` once at startup to begin the background
-    WebSocket connection.  After that, :meth:`get_latest_price` reads
-    from the in-memory cache with zero network latency.  Historical
-    methods (:meth:`get_historical_bars`, :meth:`get_first_candle`,
-    :meth:`get_average_volume`) never touch the WebSocket.
-    """
+    """Unified stock data feed with local Polygon throttling and caching."""
 
     def __init__(
         self,
@@ -45,26 +39,32 @@ class StockFeed:
         self._polygon_api_key = polygon_api_key
         self._use_sip = use_sip
 
-        # Alpaca WebSocket stream (lazy-started via start_stream)
         self._stream: StockStream | None = None
         self._stream_thread: threading.Thread | None = None
         self._stream_loop: asyncio.AbstractEventLoop | None = None
 
+        self._polygon_calls_per_minute = max(
+            1, int(os.getenv("POLYGON_CALLS_PER_MINUTE", "5"))
+        )
+        self._polygon_request_times: deque[float] = deque()
+        self._polygon_lock = threading.Lock()
+
+        self._bars_cache: dict[tuple[str, str, str], tuple[float, list[OHLCV]]] = {}
+        self._aux_cache: dict[tuple[str, str, str], tuple[float, object]] = {}
+        self._cache_lock = threading.Lock()
+
         logger.info(
-            "stock_feed_initialised | alpaca_ws={alpaca} polygon_rest={polygon}",
+            "stock_feed_initialised | alpaca_ws={alpaca} polygon_rest={polygon} polygon_budget_per_minute={budget}",
             alpaca=bool(self._alpaca_api_key),
             polygon=bool(self._polygon_api_key),
+            budget=self._polygon_calls_per_minute,
         )
 
     # ------------------------------------------------------------------
     # Alpaca WebSocket lifecycle
     # ------------------------------------------------------------------
     def start_stream(self, symbols: list[str]) -> None:
-        """Start the Alpaca WebSocket in a background daemon thread.
-
-        Subscribes to minute bars, quotes, and trades for *symbols*.
-        Safe to call multiple times -- subsequent calls are no-ops.
-        """
+        """Start the Alpaca WebSocket in a background daemon thread."""
         if self._stream is not None:
             logger.debug("stream_already_running")
             return
@@ -111,22 +111,15 @@ class StockFeed:
         logger.info("alpaca_ws_stopped")
 
     # ------------------------------------------------------------------
-    # Latest price  (Alpaca WS cache → yfinance fallback)
+    # Latest price
     # ------------------------------------------------------------------
     def get_latest_price(self, symbol: str) -> float:
-        """Return the most recent price for *symbol*.
-
-        Primary source is the Alpaca WebSocket in-memory cache (zero
-        latency, no rate limit).  Falls back to a yfinance snapshot
-        if the stream has no data for the symbol yet.
-        """
-        # Try WebSocket cache first
+        """Return the most recent price for *symbol*."""
         if self._stream is not None:
             price = self._stream.get_latest_price(symbol)
             if price > 0.0:
                 return price
 
-        # Fallback: yfinance fast_info
         try:
             ticker = yf.Ticker(symbol)
             price = float(ticker.fast_info["lastPrice"])
@@ -141,7 +134,7 @@ class StockFeed:
             return 0.0
 
     # ------------------------------------------------------------------
-    # Historical bars  (Polygon REST → yfinance fallback)
+    # Historical bars
     # ------------------------------------------------------------------
     def get_historical_bars(
         self,
@@ -149,15 +142,41 @@ class StockFeed:
         period: str = "5d",
         interval: str = "5m",
     ) -> list[OHLCV]:
-        """Fetch historical OHLCV bars.
+        """Fetch historical OHLCV bars with Polygon budget + cache guards."""
+        cache_key = (symbol.upper(), period, interval)
+        cached = self._get_cached_bars(cache_key, allow_stale=False)
+        if cached:
+            logger.debug(
+                "historical_bars_cache_hit | provider=polygon symbol={symbol} period={period} interval={interval}",
+                symbol=symbol,
+                period=period,
+                interval=interval,
+            )
+            return cached
 
-        Uses the Polygon REST API when a key is configured (higher
-        quality, VWAP included).  Falls back to yfinance otherwise.
-        """
-        if self._polygon_api_key:
-            bars = self._fetch_polygon_bars(symbol, period, interval)
-            if bars:
-                return bars
+        if self._polygon_api_key and self._should_use_polygon(interval):
+            if self._consume_polygon_budget():
+                bars = self._fetch_polygon_bars(symbol, period, interval)
+                if bars:
+                    self._set_cached_bars(cache_key, bars)
+                    return bars
+            else:
+                stale = self._get_cached_bars(cache_key, allow_stale=True)
+                if stale:
+                    logger.warning(
+                        "polygon_budget_exhausted_using_stale_cache | symbol={symbol} period={period} interval={interval}",
+                        symbol=symbol,
+                        period=period,
+                        interval=interval,
+                    )
+                    return stale
+                logger.warning(
+                    "polygon_budget_exhausted | symbol={symbol} period={period} interval={interval}",
+                    symbol=symbol,
+                    period=period,
+                    interval=interval,
+                )
+
             logger.warning(
                 "polygon_fallback_to_yfinance | symbol={symbol}",
                 symbol=symbol,
@@ -196,10 +215,10 @@ class StockFeed:
             if not results:
                 return []
 
-            bars: list[OHLCV] = []
-            for raw in results:
-                bars.append(DataNormalizer.from_polygon(raw, symbol, interval))
-
+            bars = [
+                DataNormalizer.from_polygon(raw, symbol, interval)
+                for raw in results
+            ]
             logger.info(
                 "polygon_bars_fetched | symbol={symbol} count={count}",
                 symbol=symbol,
@@ -250,9 +269,7 @@ class StockFeed:
             for idx, row in df.iterrows():
                 row_dict: dict[str, Any] = row.to_dict()
                 row_dict["Datetime"] = idx
-                bars.append(
-                    DataNormalizer.from_yfinance(row_dict, symbol, interval)
-                )
+                bars.append(DataNormalizer.from_yfinance(row_dict, symbol, interval))
 
             logger.info(
                 "yfinance_bars_fetched | symbol={symbol} period={period} count={count}",
@@ -278,15 +295,19 @@ class StockFeed:
         symbol: str,
         date: str | None = None,
     ) -> OHLCV | None:
-        """Get the first 15-min candle after market open for the given date."""
+        """Get the first 15-minute candle after market open for the given date."""
         try:
             if date is None:
                 date = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
 
-            # Skip fetch on weekends (Mon=0 .. Sun=6)
             dt = datetime.strptime(date, "%Y-%m-%d")
             if dt.weekday() >= 5:
                 return None
+
+            cache_key = (symbol.upper(), date, "first_candle")
+            cached = self._get_aux_cache(cache_key, ttl_seconds=6 * 60 * 60)
+            if cached is not None:
+                return cached if isinstance(cached, OHLCV) else None
 
             ticker = yf.Ticker(symbol)
             try:
@@ -311,6 +332,7 @@ class StockFeed:
             row_dict["Datetime"] = df.index[0]
 
             bar = DataNormalizer.from_yfinance(row_dict, symbol, "15m")
+            self._set_aux_cache(cache_key, bar)
             logger.info(
                 "first_candle_fetched | symbol={symbol} date={date} close={close}",
                 symbol=symbol,
@@ -331,8 +353,13 @@ class StockFeed:
     # Average volume
     # ------------------------------------------------------------------
     def get_average_volume(self, symbol: str, period: str = "5d") -> float:
-        """Calculate average daily volume over *period*."""
+        """Calculate average daily volume over *period* with a small TTL cache."""
         try:
+            cache_key = (symbol.upper(), period, "avg_volume")
+            cached = self._get_aux_cache(cache_key, ttl_seconds=30 * 60)
+            if isinstance(cached, float):
+                return cached
+
             ticker = yf.Ticker(symbol)
             df = ticker.history(period=period, interval="1d")
             if df is None or df.empty:
@@ -344,6 +371,7 @@ class StockFeed:
                 return 0.0
 
             avg_vol = float(df["Volume"].mean())
+            self._set_aux_cache(cache_key, avg_vol)
             logger.info(
                 "average_volume_computed | symbol={symbol} avg_volume={avg_volume}",
                 symbol=symbol,
@@ -362,6 +390,90 @@ class StockFeed:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _consume_polygon_budget(self) -> bool:
+        """Reserve one Polygon request slot within the local minute budget."""
+        now = time.monotonic()
+        with self._polygon_lock:
+            while self._polygon_request_times and now - self._polygon_request_times[0] >= 60:
+                self._polygon_request_times.popleft()
+
+            if len(self._polygon_request_times) >= self._polygon_calls_per_minute:
+                return False
+
+            self._polygon_request_times.append(now)
+            return True
+
+    def _bars_ttl_seconds(self, period: str, interval: str) -> int:
+        """Return a TTL matched to the requested bar granularity."""
+        if interval == "1h":
+            return 60 * 60
+        if interval in {"5m", "15m", "30m"}:
+            return 6 * 60
+        if interval == "1d":
+            return 6 * 60 * 60
+        return 15 * 60
+
+    @staticmethod
+    def _should_use_polygon(interval: str) -> bool:
+        """Reserve Polygon budget for minute aggregates on low-tier plans."""
+        return interval in {"1m", "5m", "15m", "30m"}
+
+    def _get_cached_bars(
+        self,
+        cache_key: tuple[str, str, str],
+        *,
+        allow_stale: bool,
+    ) -> list[OHLCV]:
+        """Get cached bars when present and still fresh unless stale is allowed."""
+        cached = None
+        with self._cache_lock:
+            cached = self._bars_cache.get(cache_key)
+        if cached is None:
+            return []
+
+        created_at, bars = cached
+        age = time.monotonic() - created_at
+        ttl = self._bars_ttl_seconds(cache_key[1], cache_key[2])
+        if allow_stale or age <= ttl:
+            return bars
+        return []
+
+    def _set_cached_bars(
+        self,
+        cache_key: tuple[str, str, str],
+        bars: list[OHLCV],
+    ) -> None:
+        """Store historical bars in the in-memory cache."""
+        with self._cache_lock:
+            self._bars_cache[cache_key] = (time.monotonic(), bars)
+
+    def _get_aux_cache(
+        self,
+        cache_key: tuple[str, str, str],
+        *,
+        ttl_seconds: int,
+    ) -> object | None:
+        """Get a cached auxiliary value if still fresh."""
+        cached = None
+        with self._cache_lock:
+            cached = self._aux_cache.get(cache_key)
+        if cached is None:
+            return None
+
+        created_at, value = cached
+        if time.monotonic() - created_at <= ttl_seconds:
+            return value
+        return None
+
+    def _set_aux_cache(
+        self,
+        cache_key: tuple[str, str, str],
+        value: object,
+    ) -> None:
+        """Store a small auxiliary cached value."""
+        with self._cache_lock:
+            self._aux_cache[cache_key] = (time.monotonic(), value)
+
     @staticmethod
     def _parse_interval_for_polygon(interval: str) -> tuple[int, str]:
         """Convert yfinance-style interval to Polygon (multiplier, timespan)."""

@@ -786,3 +786,32 @@ class TestCloseNonExistent:
         """Should return None when no position exists."""
         result = executor.close_position(symbol="FAKE", market_price=100.0)
         assert result is None
+
+
+class TestPaperReplay:
+    """Restart recovery should rebuild the portfolio from the journal."""
+
+    def test_rebuilds_cash_and_open_positions_from_journal(
+        self, db: TradeDatabase,
+    ) -> None:
+        portfolio_a = PaperPortfolio(initial_capital=100_000.0)
+        exec_a = PaperExecutor(portfolio=portfolio_a, db=db, slippage_pct=0.0)
+
+        exec_a.submit_market_order(
+            symbol="AAPL", side="buy", quantity=10,
+            market_price=100.0, market="stock", strategy="ema_cross",
+        )
+        exec_a.close_position(symbol="AAPL", market_price=110.0)
+        exec_a.submit_market_order(
+            symbol="MSFT", side="buy", quantity=5,
+            market_price=200.0, market="stock", strategy="ema_pullback",
+        )
+
+        portfolio_b = PaperPortfolio(initial_capital=100_000.0)
+        exec_b = PaperExecutor(portfolio=portfolio_b, db=db, slippage_pct=0.0)
+
+        positions = exec_b.get_positions()
+        assert len(positions) == 1
+        assert positions[0]["symbol"] == "MSFT"
+        assert portfolio_b.cash == pytest.approx(99_100.0)
+        assert portfolio_b.realized_pnl == pytest.approx(100.0)

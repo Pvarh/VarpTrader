@@ -110,6 +110,15 @@ class TelegramAlert:
             )
             return False
 
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        """Convert simple Telegram Markdown content to plain text."""
+        return (
+            text.replace("*", "")
+            .replace("_", "")
+            .replace("`", "")
+        )
+
     # ------------------------------------------------------------------
     # Trade alert
     # ------------------------------------------------------------------
@@ -162,21 +171,26 @@ class TelegramAlert:
     # Daily report
     # ------------------------------------------------------------------
     def send_daily_report(self, report_markdown: str) -> bool:
-        """Send the daily analysis report.
+        """Send the daily analysis report as plain text.
 
         Parameters
         ----------
         report_markdown:
-            Pre-formatted Markdown string containing the full daily
-            performance report.
+            Pre-formatted report body. Markdown markers are stripped
+            before delivery because Telegram parsing proved brittle for
+            the nightly report payload.
 
         Returns
         -------
         bool
             ``True`` if the report was delivered successfully.
         """
-        header = "*Daily Trading Report*\n\n"
-        return self.send_message(header + report_markdown)
+        payload = report_markdown
+        if not payload.lstrip().startswith(("*Daily Trading Report*", "Daily Trading Report")):
+            payload = f"*Daily Trading Report*\n\n{payload}"
+
+        plain_text = self._strip_markdown(payload)
+        return self.send_message(plain_text, parse_mode="")
 
     # ------------------------------------------------------------------
     # Kill switch alert

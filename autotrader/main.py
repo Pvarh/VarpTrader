@@ -8,8 +8,10 @@ swing bias advisor, backtesting, optimisation, and the live dashboard.
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
+import shutil
 import signal as signal_mod
 import sys
 import threading
@@ -24,7 +26,10 @@ from apscheduler.triggers.interval import IntervalTrigger
 from dotenv import load_dotenv
 
 # -- Logging setup (loguru) -------------------------------------------------
-LOG_DIR = Path("logs")
+IS_PYTEST_PROCESS = "pytest" in sys.modules
+LOG_DIR = Path(os.getenv("LOG_PATH", "logs"))
+if IS_PYTEST_PROCESS:
+    LOG_DIR = LOG_DIR / "pytest"
 LOG_DIR.mkdir(exist_ok=True)
 logger.remove()
 logger.add(sys.stderr, level="INFO")
@@ -88,12 +93,105 @@ app.mount(
 load_dotenv()
 
 CONFIG_PATH = Path("config.json")
+OVERSEER_TRIGGER_PATH = LOG_DIR / "overseer_trigger.json"
+NIGHTLY_ANALYSIS_TRIGGER_PATH = LOG_DIR / "nightly_analysis_trigger.json"
+STARVATION_OVERSEER_MODEL = "claude-opus-4-6"
+SIGNAL_RETRY_COOLDOWN_SECONDS = int(
+    os.getenv("SIGNAL_RETRY_COOLDOWN_SECONDS", "900")
+)
+LOSS_COOLDOWN_MINUTES = int(os.getenv("LOSS_COOLDOWN_MINUTES", "180"))
+LOSS_COOLDOWN_STREAK = int(os.getenv("LOSS_COOLDOWN_STREAK", "2"))
+SIGNAL_RETRY_PRICE_TOLERANCE_PCT = float(
+    os.getenv("SIGNAL_RETRY_PRICE_TOLERANCE_PCT", "0.005")
+)
 
 
 def load_config() -> dict:
     """Load and return the config.json file."""
     with open(CONFIG_PATH, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _lookup_nested_value(data: dict, path: list[str]) -> object:
+    """Safely resolve a nested config value."""
+    node: object = data
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _format_message_value(value: object, max_len: int = 48) -> str:
+    """Render compact values for Telegram summaries."""
+    text = json.dumps(value, ensure_ascii=True) if isinstance(value, (dict, list)) else str(value)
+    return text if len(text) <= max_len else f"{text[: max_len - 3]}..."
+
+
+def _build_nightly_change_summary(
+    config_before: dict,
+    report_data: dict,
+    approved: dict[str, object],
+    rejected: list[dict[str, object]],
+    *,
+    auto_apply: bool,
+    min_trades: int | None = None,
+) -> str:
+    """Build a compact Telegram summary for nightly analysis changes."""
+    total_trades = int(report_data.get("total_trades", 0) or 0)
+    status = "Applied" if auto_apply else "Pending approval"
+    lines = [
+        "NIGHTLY CONFIG UPDATE",
+        "",
+        f"Trades analyzed: {total_trades}",
+        f"{status}: {len(approved)} | Rejected: {len(rejected)}",
+    ]
+
+    if min_trades is not None and total_trades < min_trades:
+        lines.append(f"Insufficient trades for AI changes: need at least {min_trades}.")
+
+    if approved:
+        lines.append("")
+        lines.append(f"{status}:")
+        for param, new_value in list(approved.items())[:5]:
+            path = ConfigUpdater.PARAM_PATHS.get(param, [])
+            old_value = _lookup_nested_value(config_before, path) if path else None
+            if old_value is None:
+                lines.append(f"- {param} -> {_format_message_value(new_value)}")
+            else:
+                lines.append(
+                    f"- {param}: {_format_message_value(old_value)} -> {_format_message_value(new_value)}"
+                )
+        if len(approved) > 5:
+            lines.append(f"- ... and {len(approved) - 5} more")
+    elif min_trades is None:
+        lines.append("")
+        lines.append("No config changes proposed.")
+
+    if rejected:
+        lines.append("")
+        lines.append("Rejected:")
+        for item in rejected[:3]:
+            param = item.get("param", "?")
+            value = _format_message_value(item.get("value"))
+            reason = str(item.get("reason", "unknown"))[:90]
+            lines.append(f"- {param} -> {value} ({reason})")
+        if len(rejected) > 3:
+            lines.append(f"- ... and {len(rejected) - 3} more")
+
+    return "\n".join(lines)
+
+
+def _truncate_quantity(quantity: float, decimals: int = 6) -> float:
+    """Truncate a floating quantity without rounding up."""
+    scale = 10 ** decimals
+    return int(quantity * scale) / scale
+
+
+def _resolve_claude_auth_mode() -> str:
+    """Return the configured Claude auth mode."""
+    mode = os.getenv("VARPTRADER_CLAUDE_AUTH_MODE", "login").strip().lower()
+    return mode if mode in {"login", "api", "auto"} else "login"
 
 
 # ============================================================================
@@ -126,15 +224,7 @@ class AutoTrader:
         )
 
         # -- Signals (from config["strategies"]) -----------------------------
-        strat_cfg = self.config["strategies"]
-        self.signals = [
-            FirstCandleSignal(strat_cfg["first_candle"]),
-            EMACrossSignal(strat_cfg["ema_cross"]),
-            EMAPullbackSignal(strat_cfg["ema_pullback"]),
-            VWAPReversionSignal(strat_cfg["vwap_reversion"]),
-            RSIMomentumSignal(strat_cfg["rsi_momentum"]),
-            BollingerFadeSignal(strat_cfg["bollinger_fade"]),
-        ]
+        self.signals = self._build_signals(self.config)
 
         # -- Whale monitoring (new config keys) ------------------------------
         whale_cfg = self.config["whale"]
@@ -143,11 +233,15 @@ class AutoTrader:
             stock_block_shares=whale_cfg.get("stock_block_shares", 50000),
             stock_block_usd=whale_cfg.get("stock_block_usd", 2_000_000),
             flag_ttl_minutes=whale_cfg.get("flag_ttl_minutes", 15),
+            enabled=whale_cfg.get("stock_block_trades_enabled", False),
         )
         self.onchain_detector = OnChainWhaleDetector(
             api_key=os.getenv("WHALE_ALERT_API_KEY", ""),
             crypto_transfer_usd=whale_cfg.get("crypto_transfer_usd", 1_000_000),
             flag_ttl_minutes=whale_cfg.get("flag_ttl_minutes", 15),
+            min_sell_events=whale_cfg.get("sell_pressure_confirmations", 3),
+            max_block_minutes=whale_cfg.get("max_sell_pressure_block_minutes", 30),
+            monitored_symbols=self._watchlist_crypto_base_symbols(self.config),
         )
         self.orderbook_scanner = OrderBookScanner()
 
@@ -236,9 +330,8 @@ class AutoTrader:
             ),
         )
         self.session_bias = SessionBias()
-
-        # -- Regime change tracking ------------------------------------------
-        self._last_regime: str | None = None  # Track regime changes to reset session bias
+        self._session_bias_by_symbol: dict[str, SessionBias] = {}
+        self._last_regime_by_symbol: dict[str, str] = {}
 
         # -- Trade lifecycle -------------------------------------------------
         self.trade_manager = TradeManager()
@@ -250,17 +343,238 @@ class AutoTrader:
         self._start_time = time.time()
         self._last_signal_time = time.time()
         self._starvation_alerted = False
+        self._starvation_overseer_triggered = False
+        self._overseer_run_in_progress = False
+        self._recent_signal_attempts: dict[
+            tuple[str, str, str],
+            dict[str, float],
+        ] = {}
 
     # ====================================================================
     # Config hot-reload
     # ====================================================================
+    @staticmethod
+    def _watchlist_crypto_base_symbols(config: dict) -> set[str]:
+        """Return the monitored crypto base assets from the watchlist."""
+        crypto_symbols = config.get("watchlist", {}).get("crypto", [])
+        return {
+            str(symbol).split("/")[0].upper()
+            for symbol in crypto_symbols
+            if str(symbol).strip()
+        }
+
+    @staticmethod
+    def _build_signals(config: dict) -> list:
+        """Instantiate all strategy signal objects from config."""
+        strat_cfg = config["strategies"]
+        return [
+            FirstCandleSignal(strat_cfg["first_candle"]),
+            EMACrossSignal(strat_cfg["ema_cross"]),
+            EMAPullbackSignal(strat_cfg["ema_pullback"]),
+            VWAPReversionSignal(strat_cfg["vwap_reversion"]),
+            RSIMomentumSignal(strat_cfg["rsi_momentum"]),
+            BollingerFadeSignal(strat_cfg["bollinger_fade"]),
+        ]
+
+    def _refresh_runtime_components(self) -> None:
+        """Apply the current config to in-memory runtime components."""
+        self.signals = self._build_signals(self.config)
+
+        risk_cfg = self.config["risk"]
+        self.position_sizer = PositionSizer(risk_cfg)
+        self.reward_gate = RewardRatioGate(
+            min_ratio=risk_cfg.get("min_reward_ratio", 2.0)
+        )
+        self.order_validator = OrderValidator(risk_cfg)
+
+        previous_halt = getattr(self.kill_switch, "halted", False)
+        self.kill_switch = KillSwitch(
+            {"daily_loss_limit_pct": risk_cfg.get("daily_loss_limit_pct", 0.03)}
+        )
+        self.kill_switch._halted = previous_halt
+
+        self.regime_detector = RegimeDetector(
+            adx_threshold=self.config.get("regime", {}).get("adx_threshold", 25.0),
+        )
+        self.polymarket = PolymarketSentiment(
+            block_short_threshold=self.config.get("polymarket", {}).get(
+                "block_short_threshold", 0.65
+            ),
+        )
+
+        whale_cfg = self.config.get("whale", {})
+        self.block_detector = BlockTradeDetector(
+            api_key=os.getenv("POLYGON_API_KEY", ""),
+            stock_block_shares=whale_cfg.get("stock_block_shares", 50000),
+            stock_block_usd=whale_cfg.get("stock_block_usd", 2_000_000),
+            flag_ttl_minutes=whale_cfg.get("flag_ttl_minutes", 15),
+            enabled=whale_cfg.get("stock_block_trades_enabled", False),
+        )
+        self.onchain_detector = OnChainWhaleDetector(
+            api_key=os.getenv("WHALE_ALERT_API_KEY", ""),
+            crypto_transfer_usd=whale_cfg.get("crypto_transfer_usd", 1_000_000),
+            flag_ttl_minutes=whale_cfg.get("flag_ttl_minutes", 15),
+            min_sell_events=whale_cfg.get("sell_pressure_confirmations", 3),
+            max_block_minutes=whale_cfg.get("max_sell_pressure_block_minutes", 30),
+            monitored_symbols=self._watchlist_crypto_base_symbols(self.config),
+        )
+
+        dashboard_init(
+            db=self.db,
+            analyzer=self.analyzer,
+            config=self.config,
+            kill_switch=self.kill_switch,
+            paper_executor=self.paper_executor,
+            stock_feed=self.stock_feed,
+            crypto_feed=self.crypto_feed,
+            order_validator=self.order_validator,
+        )
+
     def reload_config(self) -> None:
         """Reload config.json from disk and re-apply volatile settings."""
         try:
-            self.config = load_config()
-            logger.debug("config_reloaded")
+            new_config = load_config()
+            if new_config == self.config:
+                logger.debug("config_reload_skipped | reason=no_change")
+                return
+            self.config = new_config
+            self._refresh_runtime_components()
+            logger.info("config_reloaded | runtime_components_refreshed=true")
         except Exception:
             logger.exception("config_reload_error")
+
+    def _record_signal_activity(self) -> None:
+        """Mark that at least one strategy emitted a signal this cycle."""
+        self._last_signal_time = time.time()
+        self._starvation_alerted = False
+        self._starvation_overseer_triggered = False
+
+    def _prune_recent_signal_attempts(self) -> None:
+        """Drop stale duplicate-suppression keys."""
+        now = time.time()
+        stale = [
+            key
+            for key, payload in self._recent_signal_attempts.items()
+            if now - payload.get("timestamp", 0.0) > SIGNAL_RETRY_COOLDOWN_SECONDS
+        ]
+        for key in stale:
+            self._recent_signal_attempts.pop(key, None)
+
+    def _signal_attempt_key(
+        self,
+        symbol: str,
+        result: SignalResult,
+    ) -> tuple[str, str, str]:
+        """Build a stable in-memory key for one signal idea."""
+        direction = result.direction.value if result.direction else "none"
+        return symbol.upper(), result.strategy_name, direction
+
+    def _is_duplicate_signal_attempt(
+        self,
+        symbol: str,
+        result: SignalResult,
+    ) -> bool:
+        """Return whether a near-identical signal was attempted recently."""
+        self._prune_recent_signal_attempts()
+        key = self._signal_attempt_key(symbol, result)
+        attempt = self._recent_signal_attempts.get(key)
+        if not attempt:
+            return False
+
+        elapsed = time.time() - float(attempt.get("timestamp", 0.0))
+        if elapsed > SIGNAL_RETRY_COOLDOWN_SECONDS:
+            return False
+
+        last_price = float(attempt.get("entry_price", 0.0) or 0.0)
+        if last_price <= 0:
+            return False
+
+        price_delta_pct = abs(result.entry_price - last_price) / last_price
+        if price_delta_pct > SIGNAL_RETRY_PRICE_TOLERANCE_PCT:
+            return False
+
+        logger.info(
+            "signal_duplicate_suppressed | symbol={} strategy={} direction={} elapsed_sec={:.0f} price_delta_pct={:.4f}",
+            symbol,
+            result.strategy_name,
+            result.direction.value if result.direction else "none",
+            elapsed,
+            price_delta_pct,
+        )
+        return True
+
+    def _remember_signal_attempt(
+        self,
+        symbol: str,
+        result: SignalResult,
+    ) -> None:
+        """Remember a signal attempt to suppress identical retries."""
+        key = self._signal_attempt_key(symbol, result)
+        self._recent_signal_attempts[key] = {
+            "timestamp": time.time(),
+            "entry_price": float(result.entry_price),
+        }
+
+    def _loss_cooldown_remaining_seconds(
+        self,
+        symbol: str,
+        strategy_name: str,
+    ) -> float:
+        """Return remaining cooldown seconds after repeated losses."""
+        recent = self.db.get_recent_closed_trades(
+            symbol=symbol,
+            strategy=strategy_name,
+            limit=LOSS_COOLDOWN_STREAK,
+            paper_trade_only=self.paper_trade,
+        )
+        if len(recent) < LOSS_COOLDOWN_STREAK:
+            return 0.0
+        if any(str(trade.get("outcome")) != "loss" for trade in recent):
+            return 0.0
+
+        last_exit = recent[0].get("exit_timestamp")
+        if not last_exit:
+            return 0.0
+
+        try:
+            last_dt = datetime.fromisoformat(str(last_exit))
+        except ValueError:
+            return 0.0
+
+        elapsed = datetime.now(timezone.utc) - last_dt.astimezone(timezone.utc)
+        remaining = LOSS_COOLDOWN_MINUTES * 60 - elapsed.total_seconds()
+        return max(0.0, remaining)
+
+    def _session_bias_enabled(self) -> bool:
+        """Return whether session-bias gating is enabled in config."""
+        return bool(self.config.get("session_bias", {}).get("enabled", True))
+
+    def _session_bias_state(self, symbol: str) -> SessionBias:
+        """Return the bias state object for one symbol."""
+        symbol_key = symbol.upper()
+        if not hasattr(self, "_session_bias_by_symbol"):
+            self._session_bias_by_symbol = {}
+        return self._session_bias_by_symbol.setdefault(symbol_key, SessionBias())
+
+    def _update_session_bias(self, symbol: str, regime: str, candles_1h: list) -> SessionBias:
+        """Update and return the session-bias state for one symbol."""
+        symbol_key = symbol.upper()
+        bias_state = self._session_bias_state(symbol_key)
+        if not hasattr(self, "_last_regime_by_symbol"):
+            self._last_regime_by_symbol = {}
+
+        previous_regime = self._last_regime_by_symbol.get(symbol_key)
+        if regime != previous_regime:
+            self._last_regime_by_symbol[symbol_key] = regime
+            bias_state.force_reevaluate()
+            logger.info(
+                "regime_changed | symbol={} old={} new={}",
+                symbol,
+                previous_regime or "?",
+                regime,
+            )
+        bias_state.evaluate(candles_1h)
+        return bias_state
 
     # ====================================================================
     # Swing advisor
@@ -349,13 +663,10 @@ class AutoTrader:
 
         # -- Regime detection & session bias (use 1h candles) ----------------
         regime = self.regime_detector.detect(candles_1h or candles_5m)
+        bias_state = self._session_bias_state(symbol)
         if candles_1h and len(candles_1h) >= 50:
-            # Force re-evaluation if regime changed
-            if regime != self._last_regime:
-                self._last_regime = regime
-                self.session_bias.force_reevaluate()
-                logger.info("regime_changed | old={} new={}", self._last_regime or '?', regime)
-            self.session_bias.evaluate(candles_1h)
+            if self._session_bias_enabled():
+                bias_state = self._update_session_bias(symbol, regime, candles_1h)
 
         whale_flag = 0
         if self.block_detector.has_sell_flag(symbol):
@@ -372,10 +683,16 @@ class AutoTrader:
                 )
                 if not result.triggered:
                     continue
+                self._record_signal_activity()
 
                 # -- Fast VWAP pre-check ----------------------------------------
                 # Block longs below 1h VWAP, shorts above 1h VWAP
-                if candles_1h and len(candles_1h) >= 10 and result.direction:
+                if (
+                    candles_1h
+                    and len(candles_1h) >= 10
+                    and result.direction
+                    and self._uses_directional_vwap_filter(sig.name)
+                ):
                     vwap_series = Indicators.vwap(candles_1h)
                     if vwap_series:
                         vwap_1h = vwap_series[-1]
@@ -401,13 +718,15 @@ class AutoTrader:
                     continue
 
                 # -- Session bias gate --------------------------------------
-                if result.direction and self.session_bias.should_block(
-                    result.direction.value
+                if (
+                    self._session_bias_enabled()
+                    and result.direction
+                    and bias_state.should_block(result.direction.value)
                 ):
                     logger.info(
                         "session_bias_blocked | symbol={} strategy={} direction={} bias={}",
                         symbol, sig.name, result.direction.value,
-                        self.session_bias.bias,
+                        bias_state.bias,
                     )
                     continue
 
@@ -519,18 +838,15 @@ class AutoTrader:
 
         # -- Regime detection & session bias ---------------------------------
         regime = self.regime_detector.detect(candles_1h or candles_5m)
+        bias_state = self._session_bias_state(symbol)
         if candles_1h and len(candles_1h) >= 50:
-            # Force re-evaluation if regime changed
-            if regime != self._last_regime:
-                self._last_regime = regime
-                self.session_bias.force_reevaluate()
-                logger.info("regime_changed | old={} new={}", self._last_regime or '?', regime)
-            self.session_bias.evaluate(candles_1h)
+            if self._session_bias_enabled():
+                bias_state = self._update_session_bias(symbol, regime, candles_1h)
 
         whale_flag = 0
         if self.onchain_detector.has_sell_pressure(base_symbol):
             logger.info(
-                "onchain_sell_pressure | symbol={} -- skipping, other symbols unaffected",
+                "onchain_sell_pressure | symbol={} -- skipping after confirmed sell-pressure cluster",
                 symbol,
             )
             return
@@ -545,10 +861,16 @@ class AutoTrader:
                 )
                 if not result.triggered:
                     continue
+                self._record_signal_activity()
 
                 # -- Fast VWAP pre-check ----------------------------------------
                 # Block longs below 1h VWAP, shorts above 1h VWAP
-                if candles_1h and len(candles_1h) >= 10 and result.direction:
+                if (
+                    candles_1h
+                    and len(candles_1h) >= 10
+                    and result.direction
+                    and self._uses_directional_vwap_filter(sig.name)
+                ):
                     vwap_series = Indicators.vwap(candles_1h)
                     if vwap_series:
                         vwap_1h = vwap_series[-1]
@@ -574,13 +896,15 @@ class AutoTrader:
                     continue
 
                 # -- Session bias gate --------------------------------------
-                if result.direction and self.session_bias.should_block(
-                    result.direction.value
+                if (
+                    self._session_bias_enabled()
+                    and result.direction
+                    and bias_state.should_block(result.direction.value)
                 ):
                     logger.info(
                         "session_bias_blocked | symbol={} strategy={} direction={} bias={}",
                         symbol, sig.name, result.direction.value,
-                        self.session_bias.bias,
+                        bias_state.bias,
                     )
                     continue
 
@@ -619,7 +943,8 @@ class AutoTrader:
         Rules:
         - rsi_momentum  shorts only in trending_down or ranging
         - rsi_momentum  longs  only in trending_up   or ranging
-        - bollinger_fade only fires in ranging regime
+        - bollinger_fade fires freely in ranging, but in trends it only
+          takes pullbacks in the direction of the trend
         - ema_cross      always allowed (it IS trend-following)
         - first_candle   always allowed
         """
@@ -633,9 +958,19 @@ class AutoTrader:
                 return regime in ("trending_up", "ranging")
 
         if strategy_name == "bollinger_fade":
-            return regime == "ranging"
+            if regime == "ranging":
+                return True
+            if regime == "trending_up":
+                return direction == SignalDirection.LONG
+            if regime == "trending_down":
+                return direction == SignalDirection.SHORT
 
         return True
+
+    @staticmethod
+    def _uses_directional_vwap_filter(strategy_name: str) -> bool:
+        """Return whether a strategy should respect the directional VWAP gate."""
+        return strategy_name in {"first_candle", "ema_cross", "ema_pullback"}
 
     def _run_signal(
         self,
@@ -837,6 +1172,22 @@ class AutoTrader:
         if result.direction is None:
             return
 
+        cooldown_remaining = self._loss_cooldown_remaining_seconds(
+            symbol=symbol,
+            strategy_name=result.strategy_name,
+        )
+        if cooldown_remaining > 0:
+            logger.info(
+                "signal_blocked_recent_losses | symbol={} strategy={} cooldown_remaining_min={:.1f}",
+                symbol,
+                result.strategy_name,
+                cooldown_remaining / 60.0,
+            )
+            return
+
+        if self._is_duplicate_signal_attempt(symbol, result):
+            return
+
         # In-memory duplicate guard: prevent multiple strategies from
         # opening the same symbol in the same scan cycle
         if symbol in self._in_flight_symbols:
@@ -856,6 +1207,8 @@ class AutoTrader:
                 symbol, result.strategy_name,
             )
             return
+
+        self._remember_signal_attempt(symbol, result)
 
         candles = (
             self.stock_feed.get_historical_bars(symbol)
@@ -968,6 +1321,11 @@ class AutoTrader:
     def poll_whale_stocks(self) -> None:
         """Poll for stock block trades."""
         try:
+            whale_cfg = self.config.get("whale", {})
+            if not whale_cfg.get("enabled", True):
+                return
+            if not whale_cfg.get("stock_block_trades_enabled", False):
+                return
             self.block_detector.poll(self.config["watchlist"]["stocks"])
         except Exception:
             logger.exception("whale_stock_poll_error")
@@ -975,6 +1333,8 @@ class AutoTrader:
     def poll_whale_crypto(self) -> None:
         """Poll for on-chain whale movements."""
         try:
+            if not self.config.get("whale", {}).get("enabled", True):
+                return
             self.onchain_detector.poll()
         except Exception:
             logger.exception("whale_crypto_poll_error")
@@ -984,10 +1344,32 @@ class AutoTrader:
     # ====================================================================
     def run_nightly_analysis(self) -> None:
         """Execute the AI-powered nightly analysis pipeline."""
+        if _resolve_claude_auth_mode() == "login" and shutil.which("claude") is None:
+            payload = {
+                "trigger_reason": "nightly_analysis",
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "model": self.config.get("analysis", {}).get("model", "claude-sonnet-4-6"),
+            }
+            NIGHTLY_ANALYSIS_TRIGGER_PATH.write_text(
+                json.dumps(payload, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            logger.info(
+                "nightly_analysis_queued_for_host | path={}",
+                NIGHTLY_ANALYSIS_TRIGGER_PATH,
+            )
+            self.telegram.send_message(
+                "NIGHTLY ANALYSIS QUEUED\n\nClaude nightly analysis will run on the VPS host using the logged-in subscription.",
+                parse_mode="",
+            )
+            return
+
         logger.info("nightly_analysis_starting")
         try:
             analysis_cfg = self.config.get("analysis", {})
             lookback = analysis_cfg.get("lookback_days", 30)
+            auto_apply = analysis_cfg.get("auto_apply_changes", False)
+            config_before = self.config
             report_data = self.analyzer.build_full_report(lookback_days=lookback)
 
             min_trades = analysis_cfg.get("min_trades_for_suggestion", 15)
@@ -1001,6 +1383,17 @@ class AutoTrader:
                     report_data, config_changes=[], rejected=[],
                 )
                 self.telegram.send_daily_report(report_md)
+                self.telegram.send_message(
+                    _build_nightly_change_summary(
+                        config_before,
+                        report_data,
+                        {},
+                        [],
+                        auto_apply=auto_apply,
+                        min_trades=min_trades,
+                    ),
+                    parse_mode="",
+                )
 
                 from journal.models import AnalysisRun
 
@@ -1017,7 +1410,6 @@ class AutoTrader:
                 recommendations
             )
             if approved:
-                auto_apply = analysis_cfg.get("auto_apply_changes", False)
                 if auto_apply:
                     self.config_updater.apply_changes(approved)
                     self.config = load_config()
@@ -1031,6 +1423,16 @@ class AutoTrader:
                 report_data, config_changes=approved, rejected=rejected
             )
             self.telegram.send_daily_report(report_md)
+            self.telegram.send_message(
+                _build_nightly_change_summary(
+                    config_before,
+                    report_data,
+                    approved,
+                    rejected,
+                    auto_apply=auto_apply,
+                ),
+                parse_mode="",
+            )
 
             from journal.models import AnalysisRun
 
@@ -1096,10 +1498,12 @@ class AutoTrader:
 
             today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             daily_pnl = self.db.get_daily_pnl(today_str)
+            daily_trade_count = self.db.get_daily_trade_count(today_str)
 
             text = (
                 f"\U0001f493 VarpTrader Heartbeat\n"
                 f"Equity: ${equity:,.0f} | Cash: ${cash:,.0f}\n"
+                f"Trades Today: {daily_trade_count}\n"
                 f"Positions: {len(positions)}\n"
                 f"{pos_lines}\n"
                 f"Daily P&L: ${daily_pnl:+,.0f} | Unrealized: ${unrealized:+,.0f}\n"
@@ -1109,6 +1513,95 @@ class AutoTrader:
             logger.info("heartbeat_sent | equity={} positions={} uptime={}", round(equity, 2), len(positions), uptime_str)
         except Exception:
             logger.exception("heartbeat_error")
+
+    def _run_overseer_job(
+        self,
+        trigger_reason: str,
+        *,
+        deep: bool = False,
+        model: str | None = None,
+    ) -> None:
+        """Execute the overseer in a background thread."""
+        try:
+            from overseer.run_overseer import run_overseer
+
+            report = run_overseer(
+                deep=deep,
+                model=model,
+                trigger_reason=trigger_reason,
+            )
+            logger.info(
+                "overseer_trigger_complete | reason={} deep={} chars={}",
+                trigger_reason,
+                deep,
+                len(report),
+            )
+        except Exception as exc:
+            logger.exception(
+                "overseer_trigger_error | reason={} deep={} err={}",
+                trigger_reason,
+                deep,
+                exc,
+            )
+            self.telegram.send_message(
+                f"OVERSEER ERROR\n\nTrigger: {trigger_reason}\nError: {exc}",
+                parse_mode="",
+            )
+        finally:
+            self._overseer_run_in_progress = False
+
+    def trigger_overseer_async(
+        self,
+        trigger_reason: str,
+        *,
+        deep: bool = False,
+        model: str | None = None,
+    ) -> str:
+        """Trigger overseer locally when available, otherwise queue a host trigger."""
+        if trigger_reason == "signal_starvation" and not model:
+            model = STARVATION_OVERSEER_MODEL
+
+        if self._overseer_run_in_progress:
+            logger.info(
+                "overseer_trigger_skipped | reason={} status=already_running",
+                trigger_reason,
+            )
+            return "skipped"
+
+        if shutil.which("claude") is None:
+            payload = {
+                "trigger_reason": trigger_reason,
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "deep": deep,
+                "model": model,
+            }
+            OVERSEER_TRIGGER_PATH.write_text(
+                json.dumps(payload, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            logger.info(
+                "overseer_trigger_queued | reason={} path={}",
+                trigger_reason,
+                OVERSEER_TRIGGER_PATH,
+            )
+            return "queued"
+
+        self._overseer_run_in_progress = True
+        threading.Thread(
+            target=self._run_overseer_job,
+            kwargs={
+                "trigger_reason": trigger_reason,
+                "deep": deep,
+                "model": model,
+            },
+            daemon=True,
+        ).start()
+        logger.info(
+            "overseer_trigger_started | reason={} deep={}",
+            trigger_reason,
+            deep,
+        )
+        return "running"
 
     # ====================================================================
     # Signal starvation detection
@@ -1125,8 +1618,8 @@ class AutoTrader:
             starvation_hours = 4
 
             if elapsed > starvation_hours * 3600:
+                hours_since = elapsed / 3600
                 if not self._starvation_alerted:
-                    hours_since = elapsed / 3600
                     logger.warning(
                         "signal_starvation | hours_since_last_signal={:.1f}",
                         hours_since,
@@ -1139,14 +1632,248 @@ class AutoTrader:
                         parse_mode="",
                     )
                     self._starvation_alerted = True
+                if not self._starvation_overseer_triggered:
+                    status = self.trigger_overseer_async("signal_starvation")
+                    if status == "running":
+                        self.telegram.send_message(
+                            f"OVERSEER TRIGGERED\n\n"
+                            f"Reason: signal starvation ({hours_since:.1f}h without signal).",
+                            parse_mode="",
+                        )
+                    elif status == "queued":
+                        self.telegram.send_message(
+                            f"OVERSEER QUEUED\n\n"
+                            f"Reason: signal starvation ({hours_since:.1f}h without signal).\n"
+                            f"Host watcher will execute the overseer run.",
+                            parse_mode="",
+                        )
+                    self._starvation_overseer_triggered = True
             else:
                 self._starvation_alerted = False
+                self._starvation_overseer_triggered = False
         except Exception:
             logger.exception("starvation_check_error")
 
     # ====================================================================
     # Telegram commands
     # ====================================================================
+    @staticmethod
+    def _parse_telegram_instruction(text: str) -> tuple[str, str] | None:
+        """Parse slash commands and plain-text buy/sell instructions."""
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("/"):
+            parts = stripped.split(maxsplit=1)
+            command = parts[0].lower().split("@")[0]
+            argument = parts[1].strip() if len(parts) > 1 else ""
+            return command, argument
+
+        parts = stripped.split(maxsplit=1)
+        if len(parts) < 2:
+            return None
+        action = parts[0].lower()
+        if action not in {"buy", "sell"}:
+            return None
+        return f"/{action}", parts[1].strip()
+
+    def _resolve_manual_symbol(self, raw_symbol: str) -> tuple[str, str]:
+        """Resolve a Telegram-entered symbol to a known market."""
+        symbol = raw_symbol.strip().upper()
+        if not symbol:
+            raise ValueError("Missing symbol. Use /buy NVDA or /sell NVDA.")
+
+        watchlist = self.config.get("watchlist", {})
+        stock_symbols = [str(item).upper() for item in watchlist.get("stocks", [])]
+        crypto_symbols = [str(item).upper() for item in watchlist.get("crypto", [])]
+        crypto_aliases = {item.replace("/", ""): item for item in crypto_symbols}
+
+        if symbol in crypto_symbols:
+            return symbol, "crypto"
+        if symbol in crypto_aliases:
+            return crypto_aliases[symbol], "crypto"
+        if "/" in symbol:
+            return symbol, "crypto"
+        if symbol in stock_symbols:
+            return symbol, "stock"
+
+        match = difflib.get_close_matches(symbol, stock_symbols, n=1, cutoff=0.75)
+        if match:
+            return match[0], "stock"
+        return symbol, "stock"
+
+    def _manual_account_snapshot(self) -> tuple[float, float]:
+        """Return current account equity and available cash for manual orders."""
+        if self.paper_trade and self.paper_portfolio:
+            return self.paper_portfolio.equity, self.paper_portfolio.cash
+        raise RuntimeError("Manual Telegram trading is enabled only in PAPER mode.")
+
+    def _get_manual_market_price(self, symbol: str, market: str) -> float:
+        """Fetch the latest price for a manual Telegram order."""
+        price = (
+            self.stock_feed.get_latest_price(symbol)
+            if market == "stock"
+            else self.crypto_feed.get_latest_price(symbol)
+        )
+        return float(price or 0.0)
+
+    def _calculate_manual_quantity(
+        self,
+        symbol: str,
+        market: str,
+        market_price: float,
+        account_value: float,
+        available_cash: float,
+    ) -> float:
+        """Size a manual Telegram order from configured position risk."""
+        risk_pct = float(self.config.get("risk", {}).get("position_size_pct", 0.005) or 0.005)
+        notional = min(available_cash, max(0.0, account_value * risk_pct))
+        if market == "stock":
+            quantity = int(notional / market_price) if market_price > 0 else 0
+            if quantity <= 0 and available_cash >= market_price > 0:
+                quantity = 1
+            return float(quantity)
+
+        if market_price <= 0:
+            return 0.0
+        return _truncate_quantity(notional / market_price, decimals=6)
+
+    def _cmd_buy(self, raw_symbol: str) -> None:
+        """Open a manual long position from Telegram."""
+        try:
+            symbol, market = self._resolve_manual_symbol(raw_symbol)
+            account_value, available_cash = self._manual_account_snapshot()
+            market_price = self._get_manual_market_price(symbol, market)
+            if market_price <= 0:
+                self.telegram.send_message(
+                    f"Manual buy failed: no live price available for {symbol}.",
+                    parse_mode="",
+                )
+                return
+
+            quantity = self._calculate_manual_quantity(
+                symbol, market, market_price, account_value, available_cash,
+            )
+            if quantity <= 0:
+                self.telegram.send_message(
+                    f"Manual buy failed: size for {symbol} would be zero at ${market_price:,.2f}.",
+                    parse_mode="",
+                )
+                return
+
+            open_trades = self.db.get_open_trades()
+            open_symbols = {trade["symbol"] for trade in open_trades} if open_trades else set()
+            current_positions = len(open_symbols)
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            daily_trade_count = max(self._daily_trade_count, self.db.get_daily_trade_count(today_str))
+
+            valid, reason = self.order_validator.validate(
+                symbol,
+                "buy",
+                quantity,
+                current_positions,
+                daily_trade_count,
+                self.kill_switch.halted,
+                open_symbols=open_symbols,
+            )
+            if not valid:
+                self.telegram.send_message(
+                    f"Manual buy rejected for {symbol}: {reason}",
+                    parse_mode="",
+                )
+                return
+
+            order = self.paper_executor.submit_market_order(
+                symbol=symbol,
+                side="buy",
+                quantity=quantity,
+                market_price=market_price,
+                market=market,
+                strategy="manual_telegram",
+                stop_loss=0.0,
+                take_profit=0.0,
+                whale_flag=0,
+            )
+            if not order:
+                self.telegram.send_message(
+                    f"Manual buy failed for {symbol}.",
+                    parse_mode="",
+                )
+                return
+
+            self._daily_trade_count = daily_trade_count + 1
+            self.telegram.send_message(
+                "MANUAL BUY EXECUTED\n\n"
+                f"Symbol: {symbol}\n"
+                f"Qty: {float(order.get('qty', quantity)):.6f}".rstrip("0").rstrip(".") + "\n"
+                f"Fill: ${float(order.get('fill_price', market_price)):,.2f}\n"
+                "Exit: sell it manually with /sell SYMBOL.",
+                parse_mode="",
+            )
+            logger.info("manual_buy_executed | symbol={} market={} qty={}", symbol, market, quantity)
+        except Exception as exc:
+            logger.exception("manual_buy_error | symbol={} err={}", raw_symbol, exc)
+            self.telegram.send_message(
+                f"Manual buy failed: {exc}",
+                parse_mode="",
+            )
+
+    def _cmd_sell(self, raw_symbol: str) -> None:
+        """Close an open position manually from Telegram."""
+        try:
+            symbol, market = self._resolve_manual_symbol(raw_symbol)
+            if not (self.paper_trade and self.paper_executor):
+                raise RuntimeError("Manual Telegram trading is enabled only in PAPER mode.")
+
+            open_positions = self.paper_executor.get_positions()
+            open_symbols = {str(pos.get('symbol', '')).upper() for pos in open_positions}
+            if symbol not in open_symbols:
+                match = difflib.get_close_matches(symbol, list(open_symbols), n=1, cutoff=0.75)
+                if match:
+                    symbol = match[0]
+                    market = "crypto" if "/" in symbol else "stock"
+                else:
+                    self.telegram.send_message(
+                        f"No open position found for {symbol}.",
+                        parse_mode="",
+                    )
+                    return
+
+            market_price = self._get_manual_market_price(symbol, market)
+            if market_price <= 0:
+                self.telegram.send_message(
+                    f"Manual sell failed: no live price available for {symbol}.",
+                    parse_mode="",
+                )
+                return
+
+            close_result = self.paper_executor.close_position(
+                symbol=symbol,
+                market_price=market_price,
+                market=market,
+            )
+            if not close_result:
+                self.telegram.send_message(
+                    f"Manual sell failed for {symbol}.",
+                    parse_mode="",
+                )
+                return
+
+            self.telegram.send_message(
+                "MANUAL SELL EXECUTED\n\n"
+                f"Symbol: {symbol}\n"
+                f"Fill: ${float(close_result.get('fill_price', market_price)):,.2f}\n"
+                f"PnL: ${float(close_result.get('pnl', 0.0)):+,.2f}",
+                parse_mode="",
+            )
+            logger.info("manual_sell_executed | symbol={} market={}", symbol, market)
+        except Exception as exc:
+            logger.exception("manual_sell_error | symbol={} err={}", raw_symbol, exc)
+            self.telegram.send_message(
+                f"Manual sell failed: {exc}",
+                parse_mode="",
+            )
+
     def poll_telegram_commands(self) -> None:
         """Poll for incoming Telegram bot commands and respond."""
         try:
@@ -1162,10 +1889,11 @@ class AutoTrader:
                 if chat_id != self.telegram._chat_id:
                     continue
 
-                if not text.startswith("/"):
+                parsed = self._parse_telegram_instruction(text)
+                if not parsed:
                     continue
 
-                cmd = text.split()[0].lower().split("@")[0]
+                cmd, argument = parsed
 
                 if cmd == "/status":
                     self._cmd_status()
@@ -1179,6 +1907,10 @@ class AutoTrader:
                     self._cmd_kill()
                 elif cmd == "/resume":
                     self._cmd_resume()
+                elif cmd == "/buy":
+                    self._cmd_buy(argument)
+                elif cmd == "/sell":
+                    self._cmd_sell(argument)
                 elif cmd == "/help":
                     self._cmd_help()
                 else:
@@ -1288,6 +2020,8 @@ class AutoTrader:
             "/positions - Open positions with P&L\n"
             "/pnl - Daily P&L and last 10 trades\n"
             "/config - Strategy and risk config\n"
+            "/buy SYMBOL - Open a manual paper long (also supports 'buy SYMBOL')\n"
+            "/sell SYMBOL - Close an open paper position (also supports 'sell SYMBOL')\n"
             "/kill - Activate kill switch\n"
             "/resume - Reset kill switch\n"
             "/help - This message",
@@ -1324,7 +2058,16 @@ def run_live(args) -> None:
     scheduler = BlockingScheduler()
 
     # -- Initialize dashboard with shared state ----------------------------
-    dashboard_init(db=trader.db, analyzer=trader.analyzer, config=trader.config, kill_switch=trader.kill_switch, paper_executor=trader.paper_executor)
+    dashboard_init(
+        db=trader.db,
+        analyzer=trader.analyzer,
+        config=trader.config,
+        kill_switch=trader.kill_switch,
+        paper_executor=trader.paper_executor,
+        stock_feed=trader.stock_feed,
+        crypto_feed=trader.crypto_feed,
+        order_validator=trader.order_validator,
+    )
 
     # -- Start dashboard in background thread ------------------------------
     dashboard_cfg = trader.config.get("dashboard", {})
@@ -1596,8 +2339,19 @@ def run_dashboard_only(args) -> None:
     db_path = os.getenv("DB_PATH", "data/trades.db")
     db = TradeDatabase(db_path)
     analyzer = PerformanceAnalyzer(db)
+    paper_executor = None
+    if os.getenv("PAPER_TRADE", "true").lower() == "true":
+        portfolio = PaperPortfolio(initial_capital=100_000.0)
+        paper_executor = PaperExecutor(
+            portfolio=portfolio, db=db, slippage_pct=0.001
+        )
 
-    dashboard_init(db=db, analyzer=analyzer, config=config)
+    dashboard_init(
+        db=db,
+        analyzer=analyzer,
+        config=config,
+        paper_executor=paper_executor,
+    )
 
     dashboard_cfg = config.get("dashboard", {})
     host = dashboard_cfg.get("host", "0.0.0.0")

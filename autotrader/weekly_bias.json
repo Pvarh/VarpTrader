@@ -1,5 +1,72 @@
 {
-  "week_start": "",
-  "generated_at": "",
-  "biases": {}
+  "week_start": "2026-03-23",
+  "generated_at": "2026-03-23T10:00:14.090496+00:00",
+  "biases": {
+    "AAPL": {
+      "symbol": "AAPL",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "TSLA": {
+      "symbol": "TSLA",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "NVDA": {
+      "symbol": "NVDA",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "SPY": {
+      "symbol": "SPY",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "QQQ": {
+      "symbol": "QQQ",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "BTC/USDT": {
+      "symbol": "BTC/USDT",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "BTC/USDC": {
+      "symbol": "BTC/USDC",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "ETH/USDT": {
+      "symbol": "ETH/USDT",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "ETH/USDC": {
+      "symbol": "ETH/USDC",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "SOL/USDT": {
+      "symbol": "SOL/USDT",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "SOL/USDC": {
+      "symbol": "SOL/USDC",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    }
+  }
 }

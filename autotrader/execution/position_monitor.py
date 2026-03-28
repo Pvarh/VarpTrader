@@ -135,6 +135,14 @@ class PositionMonitor:
             if self._paper_trade and self._paper_executor:
                 self._paper_executor._portfolio.update_price(symbol, current_price)
 
+            if trade.get("strategy") == "manual_telegram":
+                logger.debug(
+                    "manual_position_monitor_skipped | trade_id={trade_id} symbol={symbol}",
+                    trade_id=trade_id,
+                    symbol=symbol,
+                )
+                continue
+
             # 2. Trailing stop: tighten to breakeven when > 50 % to target
             stop_loss = self._apply_trailing_stop(
                 trade_id=trade_id,

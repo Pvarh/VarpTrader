@@ -1,7 +1,8 @@
-"""Validate and atomically apply configuration changes.
+"""Validate and safely apply configuration changes.
 
-Provides bounded validation for tunable trading parameters and safe
-atomic writes to the JSON config file via write-to-temp + rename.
+Primary write mode is atomic write-to-temp + rename. On bind-mounted
+single-file volumes where ``os.replace`` can fail with ``EBUSY`` or
+similar, the updater falls back to an in-place overwrite.
 """
 
 from __future__ import annotations
@@ -34,8 +35,8 @@ class ConfigUpdater:
     PARAM_PATHS: dict[str, list[str]] = {
         "stop_loss_pct": ["risk", "stop_loss_pct"],
         "position_size_pct": ["risk", "position_size_pct"],
-        "rsi_oversold": ["signals", "rsi_momentum", "rsi_oversold"],
-        "rsi_overbought": ["signals", "rsi_momentum", "rsi_overbought"],
+        "rsi_oversold": ["strategies", "rsi_momentum", "rsi_oversold"],
+        "rsi_overbought": ["strategies", "rsi_momentum", "rsi_overbought"],
     }
 
     def __init__(self, config_path: str) -> None:
@@ -217,6 +218,7 @@ class ConfigUpdater:
 
         # Atomic write: write to temp file in same directory, then rename
         config_dir = self.config_path.parent
+        tmp_path = ""
         try:
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(config_dir), suffix=".tmp", prefix=".config_"
@@ -225,14 +227,25 @@ class ConfigUpdater:
                 json.dump(cfg, tmp_fh, indent=2)
                 tmp_fh.write("\n")
             os.replace(tmp_path, str(self.config_path))
-        except OSError:
-            logger.exception(
-                "config_atomic_write_failed | path={path}", path=str(self.config_path)
-            )
-            # Clean up temp file if rename failed
+        except OSError as exc:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-            raise
+
+            if exc.errno in {16, 18, 1, 13}:
+                logger.warning(
+                    "config_atomic_write_fallback_in_place | path={path} errno={errno}",
+                    path=str(self.config_path),
+                    errno=exc.errno,
+                )
+                with open(self.config_path, "w", encoding="utf-8") as fh:
+                    json.dump(cfg, fh, indent=2)
+                    fh.write("\n")
+            else:
+                logger.exception(
+                    "config_atomic_write_failed | path={path}",
+                    path=str(self.config_path),
+                )
+                raise
 
         logger.info(
             "config_changes_applied | params={params} config_path={config_path}",

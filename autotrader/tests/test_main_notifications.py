@@ -257,7 +257,7 @@ def test_stock_signal_ignores_session_bias_when_disabled() -> None:
     trader.stock_feed.get_average_volume.return_value = 1_000_000.0
     trader.stock_feed.get_first_candle.return_value = None
     trader.regime_detector = MagicMock()
-    trader.regime_detector.detect.return_value = "ranging"
+    trader.regime_detector.detect.return_value = "trending_up"
     trader.session_bias = MagicMock()
     trader.session_bias.should_block.return_value = True
     trader.block_detector = MagicMock()

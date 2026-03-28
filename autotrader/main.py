@@ -1014,6 +1014,8 @@ class AutoTrader:
         if strategy_name == "bollinger_fade":
             if regime == "ranging":
                 return True
+            if regime == "trending_up":
+                return direction == SignalDirection.LONG
             if regime == "trending_down":
                 return direction == SignalDirection.SHORT
 

@@ -216,28 +216,45 @@ class TestRegimeAllows:
         assert AutoTrader._regime_allows(
             "bollinger_fade", SignalDirection.LONG, "trending_up"
         ) is True
+        # Longs blocked in trending_down by global long gate
         assert AutoTrader._regime_allows(
             "bollinger_fade", SignalDirection.LONG, "trending_down"
         ) is False
         assert AutoTrader._regime_allows(
             "bollinger_fade", SignalDirection.SHORT, "trending_down"
         ) is True
+        # Longs blocked in ranging by global long gate
+        assert AutoTrader._regime_allows(
+            "bollinger_fade", SignalDirection.LONG, "ranging"
+        ) is False
 
-    def test_ema_cross_always_allowed(self) -> None:
+    def test_global_long_gate_only_allows_longs_in_uptrend(self) -> None:
+        """All longs are blocked unless regime is trending_up."""
+        from main import AutoTrader
+
+        for strategy in ("ema_cross", "first_candle", "bollinger_fade", "rsi_momentum"):
+            assert AutoTrader._regime_allows(
+                strategy, SignalDirection.LONG, "trending_up"
+            ) is True
+            assert AutoTrader._regime_allows(
+                strategy, SignalDirection.LONG, "ranging"
+            ) is False
+            assert AutoTrader._regime_allows(
+                strategy, SignalDirection.LONG, "trending_down"
+            ) is False
+
+    def test_ema_cross_shorts_always_allowed(self) -> None:
         from main import AutoTrader
 
         for regime in ("trending_up", "trending_down", "ranging"):
-            assert AutoTrader._regime_allows(
-                "ema_cross", SignalDirection.LONG, regime
-            ) is True
             assert AutoTrader._regime_allows(
                 "ema_cross", SignalDirection.SHORT, regime
             ) is True
 
-    def test_first_candle_always_allowed(self) -> None:
+    def test_first_candle_shorts_always_allowed(self) -> None:
         from main import AutoTrader
 
         for regime in ("trending_up", "trending_down", "ranging"):
             assert AutoTrader._regime_allows(
-                "first_candle", SignalDirection.LONG, regime
+                "first_candle", SignalDirection.SHORT, regime
             ) is True

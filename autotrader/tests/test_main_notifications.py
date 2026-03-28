@@ -197,7 +197,7 @@ def test_poll_telegram_commands_executes_manual_sell() -> None:
 
 
 def test_directional_vwap_filter_only_applies_to_trend_following_strategies() -> None:
-    assert AutoTrader._uses_directional_vwap_filter("ema_cross") is True
+    assert AutoTrader._uses_directional_vwap_filter("ema_cross") is False
     assert AutoTrader._uses_directional_vwap_filter("ema_pullback") is True
     assert AutoTrader._uses_directional_vwap_filter("first_candle") is True
     assert AutoTrader._uses_directional_vwap_filter("rsi_momentum") is False

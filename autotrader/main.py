@@ -894,6 +894,8 @@ class AutoTrader:
         for sig in self.signals:
             if not sig.is_enabled():
                 continue
+            if not self._strategy_allowed_for_market(sig.name, "crypto"):
+                continue
             try:
                 result = self._run_signal(
                     sig, symbol, candles_5m, current_price, "crypto",
@@ -972,6 +974,16 @@ class AutoTrader:
     # ====================================================================
     # Signal evaluation helpers
     # ====================================================================
+    # Strategies that are excluded from crypto markets
+    _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle"}
+
+    @staticmethod
+    def _strategy_allowed_for_market(strategy_name: str, market: str) -> bool:
+        """Return False if *strategy_name* is excluded from *market*."""
+        if market == "crypto" and strategy_name in AutoTrader._STOCK_ONLY_STRATEGIES:
+            return False
+        return True
+
     @staticmethod
     def _regime_allows(
         strategy_name: str,
@@ -981,8 +993,8 @@ class AutoTrader:
         """Check whether *regime* permits *direction* for *strategy_name*.
 
         Rules:
+        - Longs are ONLY allowed in trending_up regime (not ranging)
         - rsi_momentum  shorts only in trending_down or ranging
-        - rsi_momentum  longs  only in trending_up   or ranging
         - bollinger_fade fires freely in ranging, but in trends it only
           takes pullbacks in the direction of the trend
         - ema_cross      always allowed (it IS trend-following)
@@ -991,17 +1003,17 @@ class AutoTrader:
         if direction is None:
             return True
 
+        # Global long gate: only allow longs in confirmed uptrend
+        if direction == SignalDirection.LONG and regime != "trending_up":
+            return False
+
         if strategy_name == "rsi_momentum":
             if direction == SignalDirection.SHORT:
                 return regime in ("trending_down", "ranging")
-            if direction == SignalDirection.LONG:
-                return regime in ("trending_up", "ranging")
 
         if strategy_name == "bollinger_fade":
             if regime == "ranging":
                 return True
-            if regime == "trending_up":
-                return direction == SignalDirection.LONG
             if regime == "trending_down":
                 return direction == SignalDirection.SHORT
 
@@ -1009,8 +1021,12 @@ class AutoTrader:
 
     @staticmethod
     def _uses_directional_vwap_filter(strategy_name: str) -> bool:
-        """Return whether a strategy should respect the directional VWAP gate."""
-        return strategy_name in {"first_candle", "ema_cross", "ema_pullback"}
+        """Return whether a strategy should respect the directional VWAP gate.
+
+        ema_cross is excluded: it is trend-following and the crossover
+        itself is a stronger directional signal than intraday VWAP.
+        """
+        return strategy_name in {"first_candle", "ema_pullback"}
 
     def _run_signal(
         self,

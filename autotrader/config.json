@@ -48,7 +48,8 @@
       "rsi_oversold": 28.0,
       "rsi_overbought": 72.0,
       "rsi_neutral_low": 45,
-      "rsi_neutral_high": 55
+      "rsi_neutral_high": 55,
+      "stop_loss_pct": 0.025
     },
     "bollinger_fade": {
       "enabled": true,
@@ -60,7 +61,7 @@
   },
   "risk": {
     "position_size_pct": 0.008,
-    "stop_loss_pct": 0.012,
+    "stop_loss_pct": 0.02,
     "daily_loss_limit_pct": 0.03,
     "min_reward_ratio": 2.0,
     "atr_period": 14,

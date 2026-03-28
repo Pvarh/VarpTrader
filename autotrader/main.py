@@ -18,6 +18,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -104,6 +105,10 @@ LOSS_COOLDOWN_STREAK = int(os.getenv("LOSS_COOLDOWN_STREAK", "2"))
 SIGNAL_RETRY_PRICE_TOLERANCE_PCT = float(
     os.getenv("SIGNAL_RETRY_PRICE_TOLERANCE_PCT", "0.005")
 )
+RECENTLY_EXITED_COOLDOWN_SECONDS = int(
+    os.getenv("RECENTLY_EXITED_COOLDOWN_SECONDS", "1800")
+)
+_US_EASTERN = ZoneInfo("US/Eastern")
 
 
 def load_config() -> dict:
@@ -443,6 +448,38 @@ class AutoTrader:
         except Exception:
             logger.exception("config_reload_error")
 
+    @staticmethod
+    def _is_us_market_open() -> bool:
+        """Return True only during regular US equity trading hours.
+
+        Regular session: Monday–Friday 09:30–16:00 Eastern.
+        """
+        now_et = datetime.now(_US_EASTERN)
+        if now_et.weekday() >= 5:  # Saturday=5, Sunday=6
+            return False
+        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+        market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+        return market_open <= now_et < market_close
+
+    def _recently_exited_trade(self, symbol: str, strategy: str) -> bool:
+        """Return True if a trade for symbol+strategy closed within the cooldown."""
+        recent = self.db.get_recent_closed_trades(
+            symbol=symbol, strategy=strategy, limit=1,
+            paper_trade_only=self.paper_trade,
+        )
+        if not recent:
+            return False
+        last = recent[0]
+        exit_ts = last.get("exit_timestamp")
+        if not exit_ts:
+            return False
+        try:
+            exit_dt = datetime.fromisoformat(exit_ts)
+            elapsed = (datetime.now(timezone.utc) - exit_dt).total_seconds()
+            return elapsed < RECENTLY_EXITED_COOLDOWN_SECONDS
+        except (ValueError, TypeError):
+            return False
+
     def _record_signal_activity(self) -> None:
         """Mark that at least one strategy emitted a signal this cycle."""
         self._last_signal_time = time.time()
@@ -606,6 +643,9 @@ class AutoTrader:
     def scan_stocks(self) -> None:
         """Run signal evaluation across all configured stock symbols."""
         if not self._running or self.kill_switch.halted:
+            return
+        if not self._is_us_market_open():
+            logger.debug("scan_stocks_skipped | reason=market_closed")
             return
         logger.info("scanning_stocks")
 
@@ -1186,6 +1226,13 @@ class AutoTrader:
             return
 
         if self._is_duplicate_signal_attempt(symbol, result):
+            return
+
+        if self._recently_exited_trade(symbol, result.strategy_name):
+            logger.info(
+                "signal_blocked_recently_exited | symbol={} strategy={} cooldown_sec={}",
+                symbol, result.strategy_name, RECENTLY_EXITED_COOLDOWN_SECONDS,
+            )
             return
 
         # In-memory duplicate guard: prevent multiple strategies from

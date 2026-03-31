@@ -9,6 +9,7 @@ indexing is straightforward (``result[-1]`` is the most recent value).
 from __future__ import annotations
 
 from datetime import date
+import math
 from math import isnan
 
 import numpy as np
@@ -434,3 +435,53 @@ class Indicators:
                 result[i] = result[i - 1] if i > 0 and current_date == candles[i - 1].timestamp.date() else typical_price
 
         return result
+
+    # ------------------------------------------------------------------
+    # MACD
+    # ------------------------------------------------------------------
+    @staticmethod
+    def macd(
+        closes: list[float],
+        fast: int = 12,
+        slow: int = 26,
+        signal: int = 9,
+    ) -> tuple[list[float], list[float], list[float]]:
+        """Compute MACD line, signal line, and histogram.
+
+        Args:
+            closes: List of closing prices.
+            fast: Fast EMA period.
+            slow: Slow EMA period.
+            signal: Signal line EMA period.
+
+        Returns:
+            Tuple of (macd_line, signal_line, histogram), each same length as input.
+            Early values are NaN where insufficient data exists.
+        """
+        fast_ema = Indicators.ema(closes, fast)
+        slow_ema = Indicators.ema(closes, slow)
+
+        macd_line: list[float] = []
+        for f, s in zip(fast_ema, slow_ema):
+            if math.isnan(f) or math.isnan(s):
+                macd_line.append(float("nan"))
+            else:
+                macd_line.append(f - s)
+
+        # Signal line = EMA of the MACD line (only over non-NaN values)
+        valid_start = slow - 1
+        macd_valid = macd_line[valid_start:]
+        if len(macd_valid) >= signal:
+            signal_ema = Indicators.ema(macd_valid, signal)
+            signal_line = [float("nan")] * valid_start + signal_ema
+        else:
+            signal_line = [float("nan")] * len(closes)
+
+        histogram: list[float] = []
+        for m, s in zip(macd_line, signal_line):
+            if math.isnan(m) or math.isnan(s):
+                histogram.append(float("nan"))
+            else:
+                histogram.append(m - s)
+
+        return macd_line, signal_line, histogram

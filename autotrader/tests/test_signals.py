@@ -10,6 +10,7 @@ sys.path.insert(0, ".")
 
 from journal.models import OHLCV
 from signals.base_signal import SignalResult, SignalDirection
+from signals.indicators import Indicators
 
 
 # ---------------------------------------------------------------------------
@@ -935,3 +936,40 @@ class TestSignalDisabled:
             atr_20d=2.0,
         )
         assert result.triggered is False
+
+
+# ---------------------------------------------------------------------------
+# TestMACDIndicator
+# ---------------------------------------------------------------------------
+
+class TestMACDIndicator:
+    def test_macd_basic_output_shape(self) -> None:
+        """MACD returns three lists of same length as input."""
+        closes = [float(i) for i in range(50)]
+        macd_line, signal_line, histogram = Indicators.macd(closes, fast=12, slow=26, signal=9)
+        assert len(macd_line) == 50
+        assert len(signal_line) == 50
+        assert len(histogram) == 50
+
+    def test_macd_early_values_are_nan(self) -> None:
+        """First slow+signal-2 values should be NaN."""
+        closes = [float(i) for i in range(50)]
+        macd_line, signal_line, histogram = Indicators.macd(closes, fast=12, slow=26, signal=9)
+        import math
+        assert math.isnan(macd_line[0])
+        assert math.isnan(signal_line[0])
+        assert math.isnan(histogram[0])
+
+    def test_macd_converging_prices(self) -> None:
+        """With constant prices, MACD should converge to zero."""
+        closes = [100.0] * 60
+        macd_line, signal_line, histogram = Indicators.macd(closes)
+        assert abs(macd_line[-1]) < 0.01
+        assert abs(signal_line[-1]) < 0.01
+        assert abs(histogram[-1]) < 0.01
+
+    def test_macd_uptrend_positive(self) -> None:
+        """In a steady uptrend, MACD line should be positive."""
+        closes = [100.0 + i * 0.5 for i in range(60)]
+        macd_line, signal_line, histogram = Indicators.macd(closes)
+        assert macd_line[-1] > 0

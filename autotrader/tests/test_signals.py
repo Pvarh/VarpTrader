@@ -1049,3 +1049,152 @@ class TestVWAPSlopeIndicator:
         slope_low = Indicators.vwap_slope(low, lookback=20)
         slope_high = Indicators.vwap_slope(high, lookback=20)
         assert abs(slope_low - slope_high) < abs(slope_low) * 0.5
+
+
+from signals.vpoc_bounce import VPOCBounceSignal
+
+
+class TestVPOCBounce:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "num_bins": 20,
+            "proximity_pct": 0.002,
+            "bounce_candles": 2,
+            "min_poc_volume_pct": 0.15,
+            "stop_loss_pct": 0.01,
+            "rr_ratio": 2.0,
+        }
+
+    @pytest.fixture(autouse=True)
+    def _no_swing_block(self):
+        with patch("signals.vpoc_bounce.VPOCBounceSignal.check_swing_bias", return_value=False):
+            yield
+
+    def _make_session_candles(self, data: list[tuple]) -> list[OHLCV]:
+        from datetime import datetime, timezone, timedelta
+        candles = []
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        for i, (o, h, l, c, v) in enumerate(data):
+            candles.append(OHLCV(
+                timestamp=base + timedelta(minutes=i * 5),
+                open=o, high=h, low=l, close=c, volume=v,
+                symbol="AAPL", timeframe="5m", market="stock",
+            ))
+        return candles
+
+    def test_long_bounce_off_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (99.5, 100.2, 99.3, 100.0, 5000),
+            (99.8, 100.5, 99.7, 100.3, 5000),
+        ])
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=100.1,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert result.triggered
+        assert result.direction == SignalDirection.LONG
+
+    def test_short_bounce_off_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (100.5, 100.8, 99.9, 100.0, 5000),
+            (100.2, 100.4, 99.6, 99.8, 5000),
+        ])
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=99.9,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert result.triggered
+        assert result.direction == SignalDirection.SHORT
+
+    def test_no_trigger_price_far_from_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (109, 111, 108, 110, 100),
+            (110, 112, 109, 111, 100),
+        ])
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=110.0,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert not result.triggered
+
+    def test_no_trigger_weak_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (95, 97, 94, 96, 1000),
+            (98, 100, 97, 99, 1000),
+            (101, 103, 100, 102, 1000),
+            (104, 106, 103, 105, 1000),
+            (107, 109, 106, 108, 1000),
+            (108, 109, 107, 108, 1000),
+            (108, 109, 107, 108, 1000),
+        ])
+        config["min_poc_volume_pct"] = 0.40
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=108.0,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert not result.triggered
+
+    def test_disabled(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=100.0,
+            session_candles=[], recent_candles=[],
+            market="stock",
+        )
+        assert not result.triggered
+
+
+class TestVPOCBounceSwingBias:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "num_bins": 20,
+            "proximity_pct": 0.002,
+            "bounce_candles": 2,
+            "min_poc_volume_pct": 0.15,
+            "stop_loss_pct": 0.01,
+            "rr_ratio": 2.0,
+        }
+
+    def test_blocked_by_swing_bias(self, config: dict) -> None:
+        from datetime import datetime, timezone, timedelta
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        session = [
+            OHLCV(timestamp=base + timedelta(minutes=i * 5),
+                   open=99+i*0.1, high=101, low=98, close=100, volume=10000,
+                   symbol="AAPL", timeframe="5m", market="stock")
+            for i in range(7)
+        ]
+        with patch("signals.vpoc_bounce.VPOCBounceSignal.check_swing_bias", return_value=True):
+            sig = VPOCBounceSignal(config)
+            result = sig.evaluate_from_profile(
+                symbol="AAPL", current_price=100.0,
+                session_candles=session, recent_candles=session[-2:],
+                market="stock",
+            )
+            assert not result.triggered

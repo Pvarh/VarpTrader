@@ -973,3 +973,56 @@ class TestMACDIndicator:
         closes = [100.0 + i * 0.5 for i in range(60)]
         macd_line, signal_line, histogram = Indicators.macd(closes)
         assert macd_line[-1] > 0
+
+
+# ===========================================================================
+# Volume Profile
+# ===========================================================================
+
+class TestVolumeProfileIndicator:
+    def _make_session_candles(self, prices_volumes: list[tuple[float, float, float, float, float]]) -> list[OHLCV]:
+        """Create candles from (open, high, low, close, volume) tuples."""
+        from datetime import datetime, timezone, timedelta
+        candles = []
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        for i, (o, h, l, c, v) in enumerate(prices_volumes):
+            candles.append(OHLCV(
+                timestamp=base + timedelta(minutes=i * 5),
+                open=o, high=h, low=l, close=c, volume=v,
+                symbol="TEST", timeframe="5m", market="stock",
+            ))
+        return candles
+
+    def test_poc_is_highest_volume_level(self) -> None:
+        candles = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (109, 111, 108, 110, 100),
+            (110, 112, 109, 111, 100),
+        ])
+        poc, vah, val = Indicators.volume_profile(candles, num_bins=20)
+        assert abs(poc - 100.0) < 2.0
+
+    def test_value_area_contains_70_pct(self) -> None:
+        candles = self._make_session_candles([
+            (99, 101, 98, 100, 5000),
+            (100, 102, 99, 101, 5000),
+            (100, 101, 99, 100, 5000),
+            (105, 107, 104, 106, 1000),
+            (110, 112, 109, 111, 500),
+        ])
+        poc, vah, val = Indicators.volume_profile(candles, num_bins=20)
+        assert val <= poc <= vah
+
+    def test_single_candle(self) -> None:
+        candles = self._make_session_candles([(100, 105, 95, 102, 1000)])
+        poc, vah, val = Indicators.volume_profile(candles, num_bins=10)
+        typical = (105 + 95 + 102) / 3
+        assert abs(poc - typical) < 2.0
+
+    def test_empty_candles(self) -> None:
+        poc, vah, val = Indicators.volume_profile([], num_bins=20)
+        assert poc == 0.0
+        assert vah == 0.0
+        assert val == 0.0

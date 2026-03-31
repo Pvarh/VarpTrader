@@ -485,3 +485,66 @@ class Indicators:
                 histogram.append(m - s)
 
         return macd_line, signal_line, histogram
+
+    # ------------------------------------------------------------------
+    # Volume Profile
+    # ------------------------------------------------------------------
+    @staticmethod
+    def volume_profile(
+        candles: list,
+        num_bins: int = 20,
+    ) -> tuple[float, float, float]:
+        """Compute volume profile and return POC + value area.
+
+        Args:
+            candles: List of OHLCV candles for the session.
+            num_bins: Number of price bins to divide the range into.
+
+        Returns:
+            Tuple of (poc_price, value_area_high, value_area_low).
+            Returns (0.0, 0.0, 0.0) if no candles provided.
+        """
+        if not candles:
+            return 0.0, 0.0, 0.0
+
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+        price_high = max(highs)
+        price_low = min(lows)
+
+        if price_high == price_low:
+            return price_high, price_high, price_low
+
+        bin_width = (price_high - price_low) / num_bins
+        bins = [0.0] * num_bins
+
+        for c in candles:
+            typical = (c.high + c.low + c.close) / 3
+            idx = min(int((typical - price_low) / bin_width), num_bins - 1)
+            bins[idx] += c.volume
+
+        poc_idx = bins.index(max(bins))
+        poc_price = price_low + (poc_idx + 0.5) * bin_width
+
+        total_volume = sum(bins)
+        if total_volume == 0:
+            return poc_price, price_high, price_low
+
+        va_volume = bins[poc_idx]
+        lo_idx = poc_idx
+        hi_idx = poc_idx
+
+        while va_volume / total_volume < 0.70 and (lo_idx > 0 or hi_idx < num_bins - 1):
+            expand_lo = bins[lo_idx - 1] if lo_idx > 0 else -1.0
+            expand_hi = bins[hi_idx + 1] if hi_idx < num_bins - 1 else -1.0
+            if expand_lo >= expand_hi:
+                lo_idx -= 1
+                va_volume += bins[lo_idx]
+            else:
+                hi_idx += 1
+                va_volume += bins[hi_idx]
+
+        val = price_low + lo_idx * bin_width
+        vah = price_low + (hi_idx + 1) * bin_width
+
+        return poc_price, vah, val

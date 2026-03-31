@@ -14,6 +14,7 @@ from journal.models import OHLCV
 from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
 from signals.vwap_reversion import VWAPReversionSignal
+from signals.macd_divergence import MACDDivergenceSignal
 
 
 # ---------------------------------------------------------------------------
@@ -1196,5 +1197,113 @@ class TestVPOCBounceSwingBias:
                 symbol="AAPL", current_price=100.0,
                 session_candles=session, recent_candles=session[-2:],
                 market="stock",
+            )
+            assert not result.triggered
+
+
+class TestMACDDivergence:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "fast_period": 12,
+            "slow_period": 26,
+            "signal_period": 9,
+            "divergence_lookback": 30,
+            "min_swing_distance": 5,
+            "stop_loss_pct": 0.015,
+            "rr_ratio": 2.0,
+        }
+
+    @pytest.fixture(autouse=True)
+    def _no_swing_block(self):
+        with patch("signals.macd_divergence.MACDDivergenceSignal.check_swing_bias", return_value=False):
+            yield
+
+    def _make_candles(self, closes: list[float]) -> list[OHLCV]:
+        from datetime import datetime, timezone, timedelta
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        candles = []
+        for i, c in enumerate(closes):
+            candles.append(OHLCV(
+                timestamp=base + timedelta(minutes=i * 5),
+                open=c, high=c + 0.5, low=c - 0.5, close=c, volume=1000,
+                symbol="AAPL", timeframe="5m", market="stock",
+            ))
+        return candles
+
+    def test_bullish_divergence_with_cross(self, config: dict) -> None:
+        closes = [100.0 - i * 0.3 for i in range(35)]
+        closes.append(90.0)
+        closes += [91.0 + i * 0.1 for i in range(14)]
+        closes.append(88.0)
+        closes += [89.0, 89.5, 90.0, 90.5, 91.0, 91.5, 92.0, 93.0, 93.5, 94.0]
+        candles = self._make_candles(closes)
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=94.0, candles=candles, market="stock",
+        )
+        assert isinstance(result.triggered, bool)
+        assert result.strategy_name == "macd_divergence"
+
+    def test_no_trigger_without_cross(self, config: dict) -> None:
+        closes = [100.0 - i * 0.2 for i in range(60)]
+        candles = self._make_candles(closes)
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=closes[-1], candles=candles, market="stock",
+        )
+        assert not result.triggered
+
+    def test_no_trigger_insufficient_data(self, config: dict) -> None:
+        closes = [100.0] * 20
+        candles = self._make_candles(closes)
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=100.0, candles=candles, market="stock",
+        )
+        assert not result.triggered
+
+    def test_disabled(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=100.0, candles=[], market="stock",
+        )
+        assert not result.triggered
+
+    def test_returns_correct_strategy_name(self, config: dict) -> None:
+        sig = MACDDivergenceSignal(config)
+        assert sig.name == "macd_divergence"
+
+
+class TestMACDDivergenceSwingBias:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "fast_period": 12,
+            "slow_period": 26,
+            "signal_period": 9,
+            "divergence_lookback": 30,
+            "min_swing_distance": 5,
+            "stop_loss_pct": 0.015,
+            "rr_ratio": 2.0,
+        }
+
+    def test_blocked_by_swing_bias(self, config: dict) -> None:
+        with patch("signals.macd_divergence.MACDDivergenceSignal.check_swing_bias", return_value=True):
+            sig = MACDDivergenceSignal(config)
+            closes = [100.0] * 60
+            from datetime import datetime, timezone, timedelta
+            base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+            candles = [
+                OHLCV(timestamp=base + timedelta(minutes=i * 5),
+                       open=c, high=c + 0.5, low=c - 0.5, close=c, volume=1000,
+                       symbol="AAPL", timeframe="5m", market="stock")
+                for i, c in enumerate(closes)
+            ]
+            result = sig.evaluate_from_macd(
+                symbol="AAPL", current_price=100.0, candles=candles, market="stock",
             )
             assert not result.triggered

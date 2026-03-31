@@ -98,7 +98,7 @@ def test_run_nightly_analysis_sends_change_summary() -> None:
     trader.telegram.send_daily_report.assert_called_once_with("daily report")
     summary_text = trader.telegram.send_message.call_args.args[0]
     assert "NIGHTLY CONFIG UPDATE" in summary_text
-    assert "Applied: 1" in summary_text
+    assert "Pending approval: 1" in summary_text
     assert "stop_loss_pct: 0.015 -> 0.02" in summary_text
     assert "Rejected: 1" in summary_text
 

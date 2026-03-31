@@ -50,6 +50,8 @@ from signals.first_candle import FirstCandleSignal
 from signals.ema_cross import EMACrossSignal
 from signals.ema_pullback import EMAPullbackSignal
 from signals.vwap_reversion import VWAPReversionSignal
+from signals.vpoc_bounce import VPOCBounceSignal
+from signals.macd_divergence import MACDDivergenceSignal
 from signals.rsi_momentum import RSIMomentumSignal
 from signals.bollinger_fade import BollingerFadeSignal
 from signals.base_signal import SignalResult, SignalDirection
@@ -394,6 +396,8 @@ class AutoTrader:
             VWAPReversionSignal(strat_cfg["vwap_reversion"]),
             RSIMomentumSignal(strat_cfg["rsi_momentum"]),
             BollingerFadeSignal(strat_cfg["bollinger_fade"]),
+            VPOCBounceSignal(strat_cfg["vpoc_bounce"]),
+            MACDDivergenceSignal(strat_cfg["macd_divergence"]),
         ]
 
     def _refresh_runtime_components(self) -> None:
@@ -1270,21 +1274,18 @@ class AutoTrader:
             )
         elif isinstance(sig, VWAPReversionSignal):
             vwap_series = Indicators.vwap(candles)
-            vwap = vwap_series[-1] if vwap_series else current_price
-
-            now = datetime.now(timezone.utc)
-            market_open = now.replace(hour=13, minute=30)
-            market_close = now.replace(hour=20, minute=0)
-            mins_since = max(
-                0, int((now - market_open).total_seconds() / 60)
-            )
-            mins_before = max(
-                0, int((market_close - now).total_seconds() / 60)
-            )
+            vwap_val = vwap_series[-1] if vwap_series else current_price
+            atr_vals = Indicators.atr(candles, period=sig.config.get("atr_period", 14))
+            atr_val = atr_vals[-1] if atr_vals else 0.0
+            slope_lb = sig.config.get("slope_lookback", 20)
+            slope_val = Indicators.vwap_slope(vwap_series, lookback=slope_lb)
+            cur_vol = candles[-1].volume if candles else 0.0
+            vol_window = candles[-20:] if len(candles) >= 20 else candles
+            avg_vol = sum(c.volume for c in vol_window) / len(vol_window) if vol_window else 1.0
             return sig.evaluate_from_vwap(
-                symbol=symbol, current_price=current_price, vwap=vwap,
-                recent_candles=candles[-3:], minutes_since_open=mins_since,
-                minutes_before_close=mins_before,
+                symbol=symbol, current_price=current_price,
+                vwap=vwap_val, atr=atr_val, vwap_slope=slope_val,
+                current_volume=cur_vol, avg_volume=avg_vol, market=market,
             )
         elif isinstance(sig, BollingerFadeSignal):
             closes = [c.close for c in candles]
@@ -1394,6 +1395,20 @@ class AutoTrader:
                 ema_fast=ema_fast,
                 ema_slow=ema_slow,
                 rsi=rsi,
+            )
+
+        elif isinstance(sig, VPOCBounceSignal):
+            bounce_n = sig.config.get("bounce_candles", 2)
+            return sig.evaluate_from_profile(
+                symbol=symbol, current_price=current_price,
+                session_candles=candles, recent_candles=candles[-bounce_n:],
+                market=market,
+            )
+
+        elif isinstance(sig, MACDDivergenceSignal):
+            return sig.evaluate_from_macd(
+                symbol=symbol, current_price=current_price,
+                candles=candles, market=market,
             )
 
         return sig.evaluate(symbol, candles, current_price, market)
@@ -2575,6 +2590,10 @@ def run_backtest(args) -> None:
             signals_list.append(
                 BollingerFadeSignal(strat_cfg["bollinger_fade"])
             )
+        if strat_cfg.get("vpoc_bounce", {}).get("enabled", False):
+            signals_list.append(VPOCBounceSignal(strat_cfg["vpoc_bounce"]))
+        if strat_cfg.get("macd_divergence", {}).get("enabled", False):
+            signals_list.append(MACDDivergenceSignal(strat_cfg["macd_divergence"]))
 
         engine = BacktestEngine(config, initial_capital=args.capital)
         result = engine.run(candles, signals_list, candles_1h=candles_1h)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -181,6 +182,9 @@ class ConfigUpdater:
 
         Does nothing when *approved* is empty.
 
+        Uses a process-wide lock shared with ``load_config`` to prevent
+        race conditions when the config hot-reloader runs concurrently.
+
         Args:
             approved: Mapping of parameter name to new value (already validated).
         """
@@ -188,9 +192,15 @@ class ConfigUpdater:
             logger.info("apply_changes_skipped | reason=no approved changes")
             return
 
+        # Import the shared config lock from main to prevent concurrent reads
+        try:
+            from main import _config_lock
+        except ImportError:
+            _config_lock = threading.Lock()
+
         # Read current config
         try:
-            with open(self.config_path, "r", encoding="utf-8") as fh:
+            with _config_lock, open(self.config_path, "r", encoding="utf-8") as fh:
                 cfg: dict = json.load(fh)
         except (OSError, json.JSONDecodeError):
             logger.exception("config_read_failed | path={path}", path=str(self.config_path))
@@ -219,33 +229,34 @@ class ConfigUpdater:
         # Atomic write: write to temp file in same directory, then rename
         config_dir = self.config_path.parent
         tmp_path = ""
-        try:
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(config_dir), suffix=".tmp", prefix=".config_"
-            )
-            with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
-                json.dump(cfg, tmp_fh, indent=2)
-                tmp_fh.write("\n")
-            os.replace(tmp_path, str(self.config_path))
-        except OSError as exc:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        with _config_lock:
+            try:
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=str(config_dir), suffix=".tmp", prefix=".config_"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp_fh:
+                    json.dump(cfg, tmp_fh, indent=2)
+                    tmp_fh.write("\n")
+                os.replace(tmp_path, str(self.config_path))
+            except OSError as exc:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
-            if exc.errno in {16, 18, 1, 13}:
-                logger.warning(
-                    "config_atomic_write_fallback_in_place | path={path} errno={errno}",
-                    path=str(self.config_path),
-                    errno=exc.errno,
-                )
-                with open(self.config_path, "w", encoding="utf-8") as fh:
-                    json.dump(cfg, fh, indent=2)
-                    fh.write("\n")
-            else:
-                logger.exception(
-                    "config_atomic_write_failed | path={path}",
-                    path=str(self.config_path),
-                )
-                raise
+                if exc.errno in {16, 18, 1, 13}:
+                    logger.warning(
+                        "config_atomic_write_fallback_in_place | path={path} errno={errno}",
+                        path=str(self.config_path),
+                        errno=exc.errno,
+                    )
+                    with open(self.config_path, "w", encoding="utf-8") as fh:
+                        json.dump(cfg, fh, indent=2)
+                        fh.write("\n")
+                else:
+                    logger.exception(
+                        "config_atomic_write_failed | path={path}",
+                        path=str(self.config_path),
+                    )
+                    raise
 
         logger.info(
             "config_changes_applied | params={params} config_path={config_path}",

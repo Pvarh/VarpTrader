@@ -96,7 +96,15 @@ load_dotenv()
 CONFIG_PATH = Path("config.json")
 OVERSEER_TRIGGER_PATH = LOG_DIR / "overseer_trigger.json"
 NIGHTLY_ANALYSIS_TRIGGER_PATH = LOG_DIR / "nightly_analysis_trigger.json"
-STARVATION_OVERSEER_MODEL = "claude-opus-4-6"
+STARVATION_OVERSEER_MODEL = "claude-sonnet-4-6"
+DRAWDOWN_HALT_PCT = float(os.getenv("DRAWDOWN_HALT_PCT", "0.05"))
+DRAWDOWN_RESUME_PCT = float(os.getenv("DRAWDOWN_RESUME_PCT", "0.03"))
+STRATEGY_COOLDOWN_LOSSES = int(os.getenv("STRATEGY_COOLDOWN_LOSSES", "3"))
+STRATEGY_COOLDOWN_MINUTES = int(os.getenv("STRATEGY_COOLDOWN_MINUTES", "60"))
+WINRATE_LOOKBACK = int(os.getenv("WINRATE_LOOKBACK", "10"))
+WINRATE_SIZE_MIN = float(os.getenv("WINRATE_SIZE_MIN", "0.5"))
+WINRATE_SIZE_MAX = float(os.getenv("WINRATE_SIZE_MAX", "1.5"))
+STRATEGY_DISABLE_AFTER_COOLDOWNS = int(os.getenv("STRATEGY_DISABLE_AFTER_COOLDOWNS", "3"))
 SIGNAL_RETRY_COOLDOWN_SECONDS = int(
     os.getenv("SIGNAL_RETRY_COOLDOWN_SECONDS", "900")
 )
@@ -111,9 +119,12 @@ RECENTLY_EXITED_COOLDOWN_SECONDS = int(
 _US_EASTERN = ZoneInfo("US/Eastern")
 
 
+_config_lock = threading.Lock()
+
+
 def load_config() -> dict:
     """Load and return the config.json file."""
-    with open(CONFIG_PATH, encoding="utf-8") as f:
+    with _config_lock, open(CONFIG_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -344,6 +355,10 @@ class AutoTrader:
         # -- State -----------------------------------------------------------
         self._daily_trade_count = 0
         self._in_flight_symbols: set[str] = set()  # Track symbols being processed in current scan cycle
+        self._peak_equity: float = 0.0
+        self._drawdown_halted: bool = False
+        self._strategy_cooldown_until: dict[str, float] = {}  # strategy -> timestamp
+        self._strategy_cooldown_count: dict[str, int] = {}  # strategy -> cooldown trigger count
         self._running = True
         self._start_time = time.time()
         self._last_signal_time = time.time()
@@ -662,6 +677,10 @@ class AutoTrader:
             logger.warning("no_account_equity")
             return
 
+        if not self._check_drawdown(account_value):
+            logger.info("scan_stocks_skipped | reason=drawdown_breaker")
+            return
+
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today_str)
         if not self.kill_switch.is_trading_allowed(daily_pnl, account_value):
@@ -833,6 +852,10 @@ class AutoTrader:
             logger.warning("no_crypto_account_value")
             return
 
+        if not self._check_drawdown(account_value):
+            logger.info("scan_crypto_skipped | reason=drawdown_breaker")
+            return
+
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today_str)
         if not self.kill_switch.is_trading_allowed(daily_pnl, account_value):
@@ -977,12 +1000,182 @@ class AutoTrader:
     # Strategies that are excluded from crypto markets
     _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle"}
 
+    # Correlation groups: symbols that move together. Max 2 same-direction
+    # positions per group to limit overlapping exposure.
+    _CORRELATION_GROUPS: list[set[str]] = [
+        {"SPY", "QQQ", "AAPL", "NVDA"},  # US large-cap tech / index
+        {"BTC/USDT", "BTC/USDC"},        # BTC pairs
+        {"ETH/USDT", "ETH/USDC"},        # ETH pairs
+        {"SOL/USDT", "SOL/USDC"},        # SOL pairs
+    ]
+    _MAX_CORRELATED_POSITIONS: int = 2
+
     @staticmethod
     def _strategy_allowed_for_market(strategy_name: str, market: str) -> bool:
         """Return False if *strategy_name* is excluded from *market*."""
         if market == "crypto" and strategy_name in AutoTrader._STOCK_ONLY_STRATEGIES:
             return False
         return True
+
+    def _correlation_allows(self, symbol: str, direction: str) -> bool:
+        """Check if opening this position would exceed correlation limits."""
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return True
+        for group in self._CORRELATION_GROUPS:
+            if symbol not in group:
+                continue
+            same_dir_count = sum(
+                1 for t in open_trades
+                if t["symbol"] in group and t["direction"] == direction
+            )
+            if same_dir_count >= self._MAX_CORRELATED_POSITIONS:
+                logger.info(
+                    "correlation_blocked | symbol={} direction={} group_count={}",
+                    symbol, direction, same_dir_count,
+                )
+                return False
+        return True
+
+    def _check_drawdown(self, current_equity: float) -> bool:
+        """Check equity drawdown from peak. Returns True if trading is allowed."""
+        if current_equity <= 0:
+            return True
+
+        if current_equity > self._peak_equity:
+            self._peak_equity = current_equity
+
+        if self._peak_equity <= 0:
+            return True
+
+        drawdown = (self._peak_equity - current_equity) / self._peak_equity
+
+        if self._drawdown_halted:
+            if drawdown <= DRAWDOWN_RESUME_PCT:
+                self._drawdown_halted = False
+                logger.info(
+                    "drawdown_breaker_resumed | equity={} peak={} drawdown_pct={:.2%}",
+                    round(current_equity, 2), round(self._peak_equity, 2), drawdown,
+                )
+                self.telegram.send_message(
+                    f"DRAWDOWN BREAKER RESUMED\n\nEquity: ${current_equity:,.2f}\nPeak: ${self._peak_equity:,.2f}\nDrawdown: {drawdown:.1%}",
+                    parse_mode="",
+                )
+                return True
+            return False
+
+        if drawdown >= DRAWDOWN_HALT_PCT:
+            self._drawdown_halted = True
+            logger.warning(
+                "drawdown_breaker_triggered | equity={} peak={} drawdown_pct={:.2%}",
+                round(current_equity, 2), round(self._peak_equity, 2), drawdown,
+            )
+            self.telegram.send_message(
+                f"DRAWDOWN BREAKER TRIGGERED\n\nEquity: ${current_equity:,.2f}\nPeak: ${self._peak_equity:,.2f}\nDrawdown: {drawdown:.1%}\n\nTrading paused until drawdown recovers to {DRAWDOWN_RESUME_PCT:.0%}",
+                parse_mode="",
+            )
+            return False
+
+        return True
+
+    def _strategy_cooldown_allows(self, strategy: str) -> bool:
+        """Return False if this strategy is on cooldown after consecutive losses."""
+        until = self._strategy_cooldown_until.get(strategy, 0.0)
+        if time.time() < until:
+            remaining = int(until - time.time())
+            logger.info(
+                "strategy_cooldown_active | strategy={} remaining_sec={}",
+                strategy, remaining,
+            )
+            return False
+
+        recent = self.db.get_recent_closed_by_strategy(
+            strategy, limit=STRATEGY_COOLDOWN_LOSSES,
+        )
+        if len(recent) < STRATEGY_COOLDOWN_LOSSES:
+            return True
+
+        if all(t["outcome"] == "loss" for t in recent):
+            self._strategy_cooldown_count[strategy] = (
+                self._strategy_cooldown_count.get(strategy, 0) + 1
+            )
+            count = self._strategy_cooldown_count[strategy]
+
+            # Auto-disable after too many cooldown triggers
+            if count >= STRATEGY_DISABLE_AFTER_COOLDOWNS:
+                self._auto_disable_strategy(strategy, count)
+                return False
+
+            cooldown_until = time.time() + STRATEGY_COOLDOWN_MINUTES * 60
+            self._strategy_cooldown_until[strategy] = cooldown_until
+            logger.warning(
+                "strategy_cooldown_triggered | strategy={} consecutive_losses={} cooldown_min={} cooldown_count={}",
+                strategy, STRATEGY_COOLDOWN_LOSSES, STRATEGY_COOLDOWN_MINUTES, count,
+            )
+            self.telegram.send_message(
+                f"STRATEGY COOLDOWN ({count}/{STRATEGY_DISABLE_AFTER_COOLDOWNS})\n\n{strategy}: {STRATEGY_COOLDOWN_LOSSES} consecutive losses\nPaused for {STRATEGY_COOLDOWN_MINUTES} minutes\n\n⚠️ Will auto-disable after {STRATEGY_DISABLE_AFTER_COOLDOWNS} cooldowns",
+                parse_mode="",
+            )
+            return False
+
+        # A win resets the cooldown count
+        if self._strategy_cooldown_count.get(strategy, 0) > 0:
+            if any(t["outcome"] == "win" for t in recent):
+                self._strategy_cooldown_count[strategy] = 0
+        return True
+
+    def _auto_disable_strategy(self, strategy: str, cooldown_count: int) -> None:
+        """Auto-disable a strategy in config.json after repeated cooldowns."""
+        try:
+            cfg = load_config()
+            if strategy in cfg.get("strategies", {}):
+                cfg["strategies"][strategy]["enabled"] = False
+                try:
+                    from main import _config_lock
+                except ImportError:
+                    _config_lock = threading.Lock()
+                with _config_lock, open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+                    json.dump(cfg, fh, indent=2)
+                    fh.write("\n")
+
+            logger.warning(
+                "strategy_auto_disabled | strategy={} cooldown_count={}",
+                strategy, cooldown_count,
+            )
+            self.telegram.send_message(
+                f"🚫 STRATEGY AUTO-DISABLED\n\n{strategy} has been disabled after {cooldown_count} consecutive cooldown triggers.\n\nReview performance and manually re-enable in config when ready.",
+                parse_mode="",
+            )
+        except Exception:
+            logger.exception("strategy_auto_disable_failed | strategy={}", strategy)
+
+    def _winrate_size_multiplier(self, strategy: str) -> float:
+        """Scale position size based on recent win rate for this strategy.
+
+        Returns a multiplier between WINRATE_SIZE_MIN and WINRATE_SIZE_MAX.
+        With 0% win rate -> MIN, 50% -> 1.0, 100% -> MAX.
+        Falls back to 1.0 when there's no history.
+        """
+        recent = self.db.get_recent_closed_by_strategy(
+            strategy, limit=WINRATE_LOOKBACK,
+        )
+        if len(recent) < 3:
+            return 1.0
+
+        wins = sum(1 for t in recent if t["outcome"] == "win")
+        win_rate = wins / len(recent)
+
+        # Linear interpolation: 0% -> MIN, 50% -> 1.0, 100% -> MAX
+        if win_rate <= 0.5:
+            multiplier = WINRATE_SIZE_MIN + (1.0 - WINRATE_SIZE_MIN) * (win_rate / 0.5)
+        else:
+            multiplier = 1.0 + (WINRATE_SIZE_MAX - 1.0) * ((win_rate - 0.5) / 0.5)
+
+        logger.info(
+            "winrate_size_adjustment | strategy={} win_rate={:.0%} trades={} multiplier={:.2f}",
+            strategy, win_rate, len(recent), multiplier,
+        )
+        return multiplier
 
     @staticmethod
     def _regime_allows(
@@ -1264,6 +1457,12 @@ class AutoTrader:
         # Mark this symbol as in-flight immediately
         self._in_flight_symbols.add(symbol)
 
+        if not self._correlation_allows(symbol, result.direction.value):
+            return
+
+        if not self._strategy_cooldown_allows(result.strategy_name):
+            return
+
         if not self.reward_gate.check(
             result.entry_price, result.stop_loss, result.take_profit
         ):
@@ -1298,6 +1497,21 @@ class AutoTrader:
             account_value, result.entry_price, atr,
             available_cash=available_cash, market=market,
         )
+
+        # Scale quantity by recent win rate for this strategy
+        size_mult = self._winrate_size_multiplier(result.strategy_name)
+        if size_mult != 1.0:
+            raw_qty = quantity
+            quantity = quantity * size_mult
+            # Re-apply market rounding
+            if market == "crypto":
+                quantity = float(int(quantity * 1e6) / 1e6)
+            else:
+                quantity = float(max(1, int(quantity)))
+            logger.info(
+                "quantity_scaled_by_winrate | strategy={} raw={} scaled={} multiplier={:.2f}",
+                result.strategy_name, raw_qty, quantity, size_mult,
+            )
 
         if quantity <= 0:
             logger.warning(
@@ -1338,6 +1552,13 @@ class AutoTrader:
                 )
                 return
             trade_id = order_result.get("trade_id")
+            fill_price = float(order_result.get("fill_price", result.entry_price))
+            slippage = abs(fill_price - result.entry_price) / result.entry_price if result.entry_price else 0.0
+            if slippage > 0.001:  # Log when slippage > 0.1%
+                logger.warning(
+                    "trade_slippage | symbol={} strategy={} expected={} fill={} slippage_pct={:.4%}",
+                    symbol, result.strategy_name, result.entry_price, fill_price, slippage,
+                )
         else:
             if market == "stock":
                 order_result = self.stock_executor.submit_market_order(
@@ -1348,6 +1569,8 @@ class AutoTrader:
                     symbol, side, float(quantity)
                 )
 
+            fill_price = float(order_result.get("fill_price", result.entry_price)) if order_result else result.entry_price
+            slippage = abs(fill_price - result.entry_price) / result.entry_price if result.entry_price else 0.0
             trade = Trade(
                 symbol=symbol,
                 market=market,
@@ -1359,8 +1582,14 @@ class AutoTrader:
                 take_profit=result.take_profit,
                 whale_flag=whale_flag,
                 paper_trade=0,
+                slippage=slippage,
             )
             trade_id = self.db.insert_trade(trade)
+            if slippage > 0.001:  # Log when slippage > 0.1%
+                logger.warning(
+                    "trade_slippage | symbol={} strategy={} expected={} fill={} slippage_pct={:.4%}",
+                    symbol, result.strategy_name, result.entry_price, fill_price, slippage,
+                )
 
         self._daily_trade_count += 1
         self._last_signal_time = time.time()
@@ -1474,15 +1703,14 @@ class AutoTrader:
             approved, rejected = self.config_updater.validate_changes(
                 recommendations
             )
+            # Config changes are handled by the overseer (runs 30 min later
+            # with full context).  The nightly analysis only reports
+            # recommendations -- it never writes to config.json.
             if approved:
-                if auto_apply:
-                    self.config_updater.apply_changes(approved)
-                    self.config = load_config()
-                    logger.info("config_updated | changes={}", approved)
-                else:
-                    logger.info(
-                        "config_changes_pending_approval | changes={}", approved
-                    )
+                logger.info(
+                    "nightly_config_recommendations | changes={} (not applied, overseer handles config)",
+                    approved,
+                )
 
             report_md = self.report_builder.build_daily_report(
                 report_data, config_changes=approved, rejected=rejected
@@ -1494,7 +1722,7 @@ class AutoTrader:
                     report_data,
                     approved,
                     rejected,
-                    auto_apply=auto_apply,
+                    auto_apply=False,  # Never auto-apply; overseer handles config
                 ),
                 parse_mode="",
             )
@@ -1505,7 +1733,7 @@ class AutoTrader:
                 trades_analyzed=report_data.get("total_trades", 0),
                 report_markdown=report_md,
                 config_changes_json=json.dumps(approved) if approved else None,
-                approved=1 if (approved and auto_apply) else 0,
+                approved=0,  # Recommendations only; overseer applies
             )
             self.db.insert_analysis_run(run)
             logger.info("nightly_analysis_complete")

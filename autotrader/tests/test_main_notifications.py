@@ -61,7 +61,7 @@ def test_trigger_overseer_async_queues_when_claude_missing(tmp_path: Path) -> No
     assert status == "queued"
     payload = json.loads(trigger_path.read_text(encoding="utf-8"))
     assert payload["trigger_reason"] == "signal_starvation"
-    assert payload["model"] == "claude-opus-4-6"
+    assert payload["model"] == "claude-sonnet-4-6"
 
 
 def test_run_nightly_analysis_sends_change_summary() -> None:

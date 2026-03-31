@@ -2,8 +2,15 @@
 
 Continuously checks open trades against live market prices and triggers
 automated exits when stop-loss or take-profit levels are breached.
-Includes a trailing-stop mechanism that tightens the stop to breakeven
-once the trade is more than 50 % of the way to its profit target.
+Includes a continuous trailing-stop mechanism that ratchets the stop upward
+as price moves favorably:
+
+- At 50 % progress toward take-profit: stop moves to breakeven (entry price).
+- At 75 % progress: stop trails at 50 % of current gains.
+- At 100 %+ progress (beyond TP): stop trails at 75 % of current gains.
+
+The stop never moves backwards -- the highest (for longs) or lowest
+(for shorts) trailing stop level is preserved across successive ticks.
 """
 
 from __future__ import annotations
@@ -29,6 +36,16 @@ class PositionMonitor:
     minutes).  Each invocation of :meth:`check_open_positions` queries the
     database for open trades, fetches current prices, and determines
     whether any exit condition has been met.
+
+    A continuous trailing stop ratchets the effective stop-loss as the trade
+    moves in the favourable direction:
+
+    - **50 % progress** toward take-profit: stop moves to breakeven (entry).
+    - **75 % progress**: stop trails at 50 % of unrealised gains.
+    - **100 %+ progress**: stop trails at 75 % of unrealised gains.
+
+    The trailing stop never moves backwards; the best level per trade is
+    tracked in ``_trailing_stop_levels``.
 
     Parameters
     ----------
@@ -71,9 +88,16 @@ class PositionMonitor:
         self._paper_trade: bool = paper_trade
         self._paper_executor: PaperExecutor | None = paper_executor
 
-        # Track trade IDs whose stops have already been tightened to
-        # breakeven so the adjustment only happens once per trade.
-        self._trailing_stop_adjusted: set[int] = set()
+        # Map trade_id → best trailing stop level seen so far.
+        # The stop is only ever ratcheted forward, never backwards.
+        self._trailing_stop_levels: dict[int, float] = {}
+
+        # Track trade IDs that have already had a partial profit take.
+        self._partial_taken: set[int] = set()
+
+        # Strategy auto-disable: count consecutive cooldown triggers.
+        # After STRATEGY_DISABLE_AFTER_COOLDOWNS cooldowns, auto-disable.
+        self._strategy_cooldown_count: dict[str, int] = {}
 
         logger.info(
             "position_monitor_initialised | paper_trade={paper_trade}",
@@ -153,6 +177,19 @@ class PositionMonitor:
                 take_profit=take_profit,
                 current_price=current_price,
             )
+
+            # 2b. Partial profit take at 50% of TP range (once per trade)
+            if trade_id not in self._partial_taken:
+                quantity: float = trade["quantity"]
+                if quantity > 0:
+                    self._maybe_partial_take(
+                        trade=trade,
+                        direction=direction,
+                        entry_price=entry_price,
+                        take_profit=take_profit,
+                        current_price=current_price,
+                        market=market,
+                    )
 
             # 3. Check stop-loss
             sl_hit: bool = False
@@ -263,15 +300,19 @@ class PositionMonitor:
         take_profit: float,
         current_price: float,
     ) -> float:
-        """Tighten stop to breakeven when the trade is > 50 % to target.
+        """Continuous trailing stop that ratchets up as price moves favorably.
 
-        The adjustment is applied at most once per trade (tracked via
-        ``_trailing_stop_adjusted``).
+        Thresholds:
+        - 50% progress -> stop at breakeven (entry)
+        - 75% progress -> stop at 50% of gains
+        - 100%+ progress -> stop at 75% of gains
 
         Parameters
         ----------
         trade_id:
             Database ID of the trade.
+        symbol:
+            Instrument symbol.
         direction:
             ``"long"`` or ``"short"``.
         entry_price:
@@ -286,35 +327,162 @@ class PositionMonitor:
         Returns
         -------
         float
-            The (possibly adjusted) stop-loss value.
+            The (possibly adjusted) stop-loss value.  Never moves backwards
+            relative to previously recorded levels for this trade.
         """
-        if trade_id in self._trailing_stop_adjusted:
-            # Already tightened -- use breakeven (entry_price) as stop.
-            return entry_price
-
         if direction == "long":
             target_range: float = take_profit - entry_price
             if target_range <= 0:
                 return stop_loss
             progress: float = (current_price - entry_price) / target_range
+            gain: float = current_price - entry_price
         else:  # short
             target_range = entry_price - take_profit
             if target_range <= 0:
                 return stop_loss
             progress = (entry_price - current_price) / target_range
+            gain = entry_price - current_price
 
-        if progress > 0.5:
-            self._trailing_stop_adjusted.add(trade_id)
+        if progress < 0.5:
+            # Even below threshold, return previously stored level if it exists
+            return self._trailing_stop_levels.get(trade_id, stop_loss)
+
+        # Calculate new trailing stop level
+        if progress >= 1.0:
+            trail_pct: float = 0.75
+        elif progress >= 0.75:
+            trail_pct = 0.50
+        else:
+            trail_pct = 0.0  # breakeven
+
+        if direction == "long":
+            new_stop: float = entry_price + gain * trail_pct
+        else:
+            new_stop = entry_price - gain * trail_pct
+
+        # Never move stop backwards
+        prev_stop: float = self._trailing_stop_levels.get(trade_id, stop_loss)
+        if direction == "long":
+            best_stop: float = max(new_stop, prev_stop)
+        else:
+            best_stop = min(new_stop, prev_stop)
+
+        if best_stop != prev_stop:
+            self._trailing_stop_levels[trade_id] = best_stop
             logger.info(
-                "trailing_stop_tightened | trade_id={trade_id} old_stop={old_stop} new_stop={new_stop} progress_pct={progress_pct}",
+                "trailing_stop_updated | trade_id={trade_id} symbol={symbol} old_stop={old_stop} new_stop={new_stop} progress_pct={progress_pct} trail_pct={trail_pct}",
                 trade_id=trade_id,
-                old_stop=stop_loss,
-                new_stop=entry_price,
+                symbol=symbol,
+                old_stop=round(prev_stop, 4),
+                new_stop=round(best_stop, 4),
+                progress_pct=round(progress * 100, 1),
+                trail_pct=round(trail_pct * 100, 0),
+            )
+        elif trade_id not in self._trailing_stop_levels:
+            self._trailing_stop_levels[trade_id] = best_stop
+            logger.info(
+                "trailing_stop_activated | trade_id={trade_id} symbol={symbol} stop={stop} progress_pct={progress_pct}",
+                trade_id=trade_id,
+                symbol=symbol,
+                stop=round(best_stop, 4),
                 progress_pct=round(progress * 100, 1),
             )
-            return entry_price
 
-        return stop_loss
+        return best_stop
+
+    # ------------------------------------------------------------------
+    # Partial profit taking
+    # ------------------------------------------------------------------
+
+    _PARTIAL_TAKE_PROGRESS: float = 0.50  # Take profit at 50% of TP range
+    _PARTIAL_TAKE_FRACTION: float = 0.50  # Close 50% of position
+
+    def _maybe_partial_take(
+        self,
+        trade: dict[str, Any],
+        direction: str,
+        entry_price: float,
+        take_profit: float,
+        current_price: float,
+        market: str,
+    ) -> None:
+        """Close half the position when price reaches 50% of TP target."""
+        trade_id: int = trade["id"]
+        symbol: str = trade["symbol"]
+        quantity: float = trade["quantity"]
+
+        # Calculate progress toward TP
+        if direction == "long":
+            target_range = take_profit - entry_price
+            if target_range <= 0:
+                return
+            progress = (current_price - entry_price) / target_range
+        else:
+            target_range = entry_price - take_profit
+            if target_range <= 0:
+                return
+            progress = (entry_price - current_price) / target_range
+
+        if progress < self._PARTIAL_TAKE_PROGRESS:
+            return
+
+        # Calculate quantities
+        close_qty = quantity * self._PARTIAL_TAKE_FRACTION
+        remaining_qty = quantity - close_qty
+
+        # Round for market type
+        if market == "crypto":
+            close_qty = float(int(close_qty * 1e6) / 1e6)
+            remaining_qty = float(int(remaining_qty * 1e6) / 1e6)
+        else:
+            close_qty = float(int(close_qty))
+            remaining_qty = float(int(quantity) - int(close_qty))
+
+        if close_qty <= 0 or remaining_qty <= 0:
+            return
+
+        # Calculate PnL on the closed portion
+        if direction == "long":
+            partial_pnl = (current_price - entry_price) * close_qty
+        else:
+            partial_pnl = (entry_price - current_price) * close_qty
+
+        # Execute partial close for paper trades
+        if self._paper_trade and self._paper_executor:
+            portfolio = self._paper_executor._portfolio
+            with portfolio._lock:
+                if symbol in portfolio._positions:
+                    pos = portfolio._positions[symbol]
+                    pos.quantity = remaining_qty
+                    portfolio._cash += close_qty * current_price
+                    portfolio._realized_pnl += partial_pnl
+
+        # Update DB: reduce quantity, record partial take
+        self._db.update_trade_partial_close(
+            trade_id=trade_id,
+            closed_qty=close_qty,
+            remaining_qty=remaining_qty,
+            partial_pnl=partial_pnl,
+            partial_exit_price=current_price,
+        )
+
+        self._partial_taken.add(trade_id)
+
+        logger.info(
+            "partial_profit_taken | trade_id={} symbol={} closed_qty={} remaining={} partial_pnl={:.2f} progress={:.0%}",
+            trade_id, symbol, close_qty, remaining_qty, partial_pnl, progress,
+        )
+
+        # Telegram alert
+        self._telegram.send_alert({
+            "action": "PARTIAL TAKE",
+            "symbol": symbol,
+            "direction": direction.upper(),
+            "price": current_price,
+            "quantity": close_qty,
+            "strategy": trade.get("strategy", "N/A"),
+            "pnl": partial_pnl,
+        })
 
     # ------------------------------------------------------------------
     # Trade closure
@@ -412,7 +580,8 @@ class PositionMonitor:
         )
 
         # 4. Clean up trailing stop tracking
-        self._trailing_stop_adjusted.discard(trade_id)
+        self._trailing_stop_levels.pop(trade_id, None)
+        self._partial_taken.discard(trade_id)
 
         # 5. Send Telegram alert
         alert_dict: dict[str, Any] = {

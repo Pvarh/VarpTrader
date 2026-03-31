@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import difflib
+import io
 import json
+import math
 import os
 import time
 from datetime import datetime, timezone, timedelta
@@ -20,7 +23,7 @@ from fastapi import (
     WebSocketDisconnect,
     Header,
 )
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
@@ -86,29 +89,16 @@ class ConnectionManager:
         self._connections: dict[str, list[WebSocket]] = {"signals": [], "pnl": []}
 
     async def connect(self, channel: str, ws: WebSocket) -> None:
-        """Accept and register a WebSocket connection on a channel."""
         await ws.accept()
         if channel not in self._connections:
             self._connections[channel] = []
         self._connections[channel].append(ws)
-        logger.info(
-            "websocket_connected | channel={channel} total={total}",
-            channel=channel,
-            total=len(self._connections[channel]),
-        )
 
     async def disconnect(self, channel: str, ws: WebSocket) -> None:
-        """Remove a WebSocket connection from a channel."""
         if channel in self._connections and ws in self._connections[channel]:
             self._connections[channel].remove(ws)
-        logger.info(
-            "websocket_disconnected | channel={channel} remaining={remaining}",
-            channel=channel,
-            remaining=len(self._connections.get(channel, [])),
-        )
 
     async def broadcast(self, channel: str, data: dict) -> None:
-        """Send a JSON message to all connections on a channel."""
         if channel not in self._connections:
             return
         dead: list[WebSocket] = []
@@ -124,8 +114,123 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# ---------------------------------------------------------------------------
+# Performance metrics computation
+# ---------------------------------------------------------------------------
+
+def _compute_performance_metrics(days: int = 30) -> dict:
+    """Compute key performance metrics from trade history."""
+    if not _db:
+        return {"win_rate": 0, "sharpe": 0, "max_drawdown": 0, "profit_factor": 0, "total_trades": 0, "avg_pnl": 0}
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    trades = _db.get_trades_since_by_activity(since) or []
+    closed = [t for t in trades if t.get("outcome") in ("win", "loss", "breakeven")]
+
+    if not closed:
+        return {"win_rate": 0, "sharpe": 0, "max_drawdown": 0, "profit_factor": 0, "total_trades": 0, "avg_pnl": 0}
+
+    wins = sum(1 for t in closed if t.get("outcome") == "win")
+    win_rate = wins / len(closed) if closed else 0
+
+    pnls = [float(t.get("pnl", 0) or 0) for t in closed]
+    avg_pnl = sum(pnls) / len(pnls) if pnls else 0
+    std_pnl = (sum((p - avg_pnl) ** 2 for p in pnls) / len(pnls)) ** 0.5 if len(pnls) > 1 else 0
+    sharpe = (avg_pnl / std_pnl) * (252 ** 0.5) if std_pnl > 0 else 0
+
+    # Max drawdown from cumulative PnL
+    cumulative = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for p in pnls:
+        cumulative += p
+        if cumulative > peak:
+            peak = cumulative
+        dd = peak - cumulative
+        if dd > max_dd:
+            max_dd = dd
+
+    gross_profit = sum(p for p in pnls if p > 0)
+    gross_loss = abs(sum(p for p in pnls if p < 0))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf") if gross_profit > 0 else 0
+
+    return {
+        "win_rate": round(win_rate * 100, 1),
+        "sharpe": round(sharpe, 2),
+        "max_drawdown": round(max_dd, 2),
+        "profit_factor": round(profit_factor, 2) if profit_factor != float("inf") else 999.0,
+        "total_trades": len(closed),
+        "avg_pnl": round(avg_pnl, 2),
+    }
+
+
+def _compute_strategy_pnl(days: int = 30) -> dict:
+    """Compute P&L breakdown per strategy."""
+    if not _db:
+        return {}
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    trades = _db.get_trades_since_by_activity(since) or []
+    closed = [t for t in trades if t.get("outcome") in ("win", "loss", "breakeven")]
+
+    result: dict[str, dict] = {}
+    for t in closed:
+        strat = t.get("strategy", "unknown")
+        if strat not in result:
+            result[strat] = {"pnl": 0.0, "wins": 0, "losses": 0, "trades": 0}
+        pnl = float(t.get("pnl", 0) or 0)
+        result[strat]["pnl"] += pnl
+        result[strat]["trades"] += 1
+        if t.get("outcome") == "win":
+            result[strat]["wins"] += 1
+        elif t.get("outcome") == "loss":
+            result[strat]["losses"] += 1
+
+    for strat in result:
+        total = result[strat]["trades"]
+        result[strat]["pnl"] = round(result[strat]["pnl"], 2)
+        result[strat]["win_rate"] = round(result[strat]["wins"] / total * 100, 1) if total > 0 else 0
+
+    return result
+
+
+def _compute_daily_pnl(days: int = 30) -> list[dict]:
+    """Compute daily P&L for bar chart."""
+    if not _db:
+        return []
+    result = []
+    for i in range(days):
+        date = datetime.now(timezone.utc) - timedelta(days=days - 1 - i)
+        date_str = date.strftime("%Y-%m-%d")
+        pnl = _db.get_daily_pnl(date_str)
+        result.append({"date": date_str, "pnl": round(pnl, 2)})
+    return result
+
+
+def _get_regime_status() -> dict:
+    """Get current regime detection and filter status."""
+    try:
+        from main import AutoTrader
+        # Get the trader instance's current state if available
+        config = _load_config_from_disk()
+        regime_cfg = config.get("regime", {})
+        strategies = config.get("strategies", {})
+
+        enabled_strategies = [name for name, cfg in strategies.items() if cfg.get("enabled")]
+        disabled_strategies = [name for name, cfg in strategies.items() if not cfg.get("enabled")]
+
+        return {
+            "adx_threshold": regime_cfg.get("adx_threshold", 25.0),
+            "enabled_strategies": enabled_strategies,
+            "disabled_strategies": disabled_strategies,
+            "session_bias_enabled": config.get("session_bias", {}).get("enabled", False),
+            "whale_enabled": config.get("whale", {}).get("enabled", False),
+            "polymarket_threshold": config.get("polymarket", {}).get("block_short_threshold", 0.65),
+        }
+    except Exception:
+        return {}
+
+
 def _get_unrealized_pnl() -> float:
-    """Get total unrealized PnL from paper executor positions."""
     if not _paper_executor:
         return 0.0
     try:
@@ -138,7 +243,6 @@ def _get_unrealized_pnl() -> float:
 
 
 def _get_portfolio_stats() -> dict:
-    """Get portfolio stats: cash, invested, equity, positions with current prices."""
     if not _paper_executor:
         return {"cash": 0.0, "invested": 0.0, "equity": 0.0, "unrealized_pnl": 0.0, "positions": []}
     try:
@@ -162,12 +266,10 @@ def _get_portfolio_stats() -> dict:
 
 
 def _infer_market(symbol: str) -> str:
-    """Infer market type from the symbol format."""
     return "crypto" if "/" in symbol else "stock"
 
 
 def _estimate_position_price(position: dict) -> float:
-    """Estimate current price from the portfolio snapshot."""
     qty = abs(float(position.get("qty", 0) or 0))
     market_value = float(position.get("market_value", 0) or 0)
     entry_price = float(position.get("avg_entry_price", 0) or 0)
@@ -177,14 +279,12 @@ def _estimate_position_price(position: dict) -> float:
 
 
 def _dashboard_api_key_required(x_api_key: str | None) -> None:
-    """Enforce dashboard API key when configured."""
     expected_key = os.getenv("DASHBOARD_API_KEY", "").strip()
     if expected_key and x_api_key != expected_key:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
 
 def _resolve_manual_symbol(raw_symbol: str) -> tuple[str, str]:
-    """Resolve a dashboard-entered symbol against the watchlist."""
     symbol = raw_symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=400, detail="Symbol is required")
@@ -210,7 +310,6 @@ def _resolve_manual_symbol(raw_symbol: str) -> tuple[str, str]:
 
 
 def _get_manual_market_price(symbol: str, market: str) -> float:
-    """Fetch the latest price for a dashboard manual order."""
     feed = _stock_feed if market == "stock" else _crypto_feed
     if feed is None:
         raise HTTPException(status_code=500, detail=f"No {market} feed available")
@@ -225,7 +324,6 @@ def _get_manual_market_price(symbol: str, market: str) -> float:
 
 
 def _calculate_manual_quantity(market: str, market_price: float) -> float:
-    """Size a dashboard manual order using configured paper risk."""
     if not _paper_executor:
         raise HTTPException(status_code=400, detail="Paper executor not available")
     portfolio = _paper_executor._portfolio
@@ -246,12 +344,7 @@ def _calculate_manual_quantity(market: str, market_price: float) -> float:
     return int((notional / market_price) * scale) / scale
 
 
-# ---------------------------------------------------------------------------
-# Helper: load config from disk
-# ---------------------------------------------------------------------------
-
 def _load_config_from_disk() -> dict:
-    """Load config.json from the project root."""
     config_path = Path(__file__).resolve().parent.parent / "config.json"
     try:
         with open(config_path, encoding="utf-8") as fh:
@@ -262,52 +355,42 @@ def _load_config_from_disk() -> dict:
 
 
 def _load_weekly_bias() -> dict:
-    """Load weekly_bias.json from the project root."""
     bias_path = Path(__file__).resolve().parent.parent / "weekly_bias.json"
     try:
         with open(bias_path, encoding="utf-8") as fh:
             return json.load(fh)
     except (OSError, json.JSONDecodeError):
-        logger.warning("weekly_bias_load_failed | path={path}", path=str(bias_path))
         return {"week_start": "", "generated_at": "", "biases": {}}
 
 
 def _is_kill_switch_active() -> bool:
-    """Check if kill switch is currently halted."""
     if _kill_switch is not None:
         return _kill_switch.halted
     return False
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 # HTML Pages
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 
 @router.get("/", response_class=HTMLResponse)
 async def dashboard_page(request: Request):
-    """Serve the main dashboard page."""
     config = _load_config_from_disk()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
-    unrealized_pnl = _get_unrealized_pnl()
     open_trades = _db.get_open_trades() if _db else []
 
-    # Recent 20 trades
     since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     all_trades = _db.get_trades_since_by_activity(since) if _db else []
     recent_trades = all_trades[:20]
 
-    # PnL history for equity curve (30 days)
-    pnl_history = []
-    for i in range(30):
-        date = datetime.now(timezone.utc) - timedelta(days=29 - i)
-        date_str = date.strftime("%Y-%m-%d")
-        pnl = _db.get_daily_pnl(date_str) if _db else 0.0
-        pnl_history.append({"date": date_str, "pnl": round(pnl, 2)})
+    daily_pnl_data = _compute_daily_pnl(30)
+    performance = _compute_performance_metrics(30)
+    strategy_pnl = _compute_strategy_pnl(30)
+    regime_status = _get_regime_status()
 
     paper_mode = _is_paper_mode(config)
     manual_symbols = list(config.get("watchlist", {}).get("stocks", [])) + list(config.get("watchlist", {}).get("crypto", []))
-
     portfolio = _get_portfolio_stats()
 
     return templates.TemplateResponse(request, "dashboard.html", {
@@ -318,11 +401,14 @@ async def dashboard_page(request: Request):
         "equity": portfolio["equity"],
         "open_trades": open_trades,
         "recent_trades": recent_trades,
-        "pnl_history": json.dumps(pnl_history),
+        "daily_pnl_data": json.dumps(daily_pnl_data),
         "kill_switch_active": _is_kill_switch_active(),
         "paper_mode": paper_mode,
         "portfolio_positions": portfolio["positions"],
         "manual_symbols": manual_symbols,
+        "performance": performance,
+        "strategy_pnl": json.dumps(strategy_pnl),
+        "regime_status": regime_status,
     })
 
 
@@ -335,12 +421,10 @@ async def trades_page(
     days: int = Query(default=30, ge=1, le=365),
     page: int = Query(default=1, ge=1),
 ):
-    """Serve the trade journal page with filtering."""
     per_page = 50
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     all_trades = _db.get_trades_since_by_activity(since) if _db else []
 
-    # Apply filters
     if strategy:
         all_trades = [t for t in all_trades if t.get("strategy") == strategy]
     if outcome:
@@ -354,7 +438,6 @@ async def trades_page(
     start = (page - 1) * per_page
     trades = all_trades[start : start + per_page]
 
-    # Get unique strategies and markets for filter dropdowns
     strategies = _db.get_all_strategies() if _db else []
     markets = sorted({t.get("market", "") for t in all_trades if t.get("market")})
 
@@ -374,8 +457,6 @@ async def trades_page(
 
 @router.get("/analysis", response_class=HTMLResponse)
 async def analysis_page(request: Request):
-    """Serve the analysis page."""
-    # Latest analysis run
     latest_run = None
     if _db:
         conn = _db._get_connection()
@@ -388,15 +469,11 @@ async def analysis_page(request: Request):
         except Exception:
             logger.exception("failed_to_fetch_latest_analysis_run")
 
-    # Weekly bias
     weekly_bias = _load_weekly_bias()
-
-    # Strategy win rates
     win_rates = {}
     if _analyzer:
         win_rates = _analyzer.compute_strategy_win_rates(lookback_days=30)
 
-    # Whale correlation
     whale_corr = {"with_whale": 0.0, "without_whale": 0.0}
     if _analyzer:
         whale_corr = _analyzer.compute_whale_correlation()
@@ -411,10 +488,7 @@ async def analysis_page(request: Request):
 
 @router.get("/config", response_class=HTMLResponse)
 async def config_page(request: Request):
-    """Serve the config viewer page."""
     config = _load_config_from_disk()
-
-    # Pending AI changes (unapproved analysis runs with config changes)
     pending_changes = []
     if _db:
         conn = _db._get_connection()
@@ -437,31 +511,27 @@ async def config_page(request: Request):
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 # JSON API endpoints
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 
 @router.get("/whale")
 async def whale_flags():
-    """Return current whale flags dict."""
     return _whale_flags
 
 
 @router.get("/signals")
 async def recent_signals():
-    """Return the last 10 fired signals."""
     return _recent_signals
 
 
 @router.get("/health")
 async def health_check():
-    """Return system status JSON."""
     config = _load_config_from_disk()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
     open_trades = _db.get_open_trades() if _db else []
     portfolio = _get_portfolio_stats()
-
     uptime_seconds = time.time() - _start_time
 
     return {
@@ -476,25 +546,78 @@ async def health_check():
     }
 
 
+@router.get("/api/performance")
+async def api_performance(days: int = Query(default=30, ge=1, le=365)):
+    """Return performance metrics as JSON."""
+    return _compute_performance_metrics(days)
+
+
+@router.get("/api/strategy-pnl")
+async def api_strategy_pnl(days: int = Query(default=30, ge=1, le=365)):
+    """Return per-strategy P&L breakdown."""
+    return _compute_strategy_pnl(days)
+
+
+@router.get("/api/regime")
+async def api_regime():
+    """Return current regime/filter status."""
+    return _get_regime_status()
+
+
+@router.get("/export/trades")
+async def export_trades_csv(
+    days: int = Query(default=30, ge=1, le=365),
+    x_api_key: Optional[str] = Header(default=None),
+):
+    """Export trades as CSV download."""
+    _dashboard_api_key_required(x_api_key)
+    if not _db:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    trades = _db.get_trades_since_by_activity(since) or []
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "id", "timestamp", "symbol", "market", "strategy", "direction",
+        "entry_price", "exit_price", "quantity", "stop_loss", "take_profit",
+        "pnl", "pnl_pct", "outcome", "whale_flag", "paper_trade",
+    ])
+    for t in trades:
+        writer.writerow([
+            t.get("id", ""), t.get("timestamp", ""), t.get("symbol", ""),
+            t.get("market", ""), t.get("strategy", ""), t.get("direction", ""),
+            t.get("entry_price", ""), t.get("exit_price", ""), t.get("quantity", ""),
+            t.get("stop_loss", ""), t.get("take_profit", ""),
+            t.get("pnl", ""), t.get("pnl_pct", ""), t.get("outcome", ""),
+            t.get("whale_flag", ""), t.get("paper_trade", ""),
+        ])
+
+    output.seek(0)
+    filename = f"trades_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        output,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @router.post("/config/approve/{run_id}")
 async def approve_config_change(
     run_id: int,
     x_api_key: Optional[str] = Header(default=None),
 ):
-    """Approve a pending AI config change. Requires X-API-Key header."""
     _dashboard_api_key_required(x_api_key)
-
     if not _db:
         raise HTTPException(status_code=500, detail="Database not initialized")
 
-    # Look up the analysis run
     conn = _db._get_connection()
     try:
         row = conn.execute(
             "SELECT * FROM analysis_runs WHERE id = ?", (run_id,)
         ).fetchone()
     except Exception:
-        logger.exception("approve_lookup_failed | run_id={run_id}", run_id=run_id)
         raise HTTPException(status_code=500, detail="Database error")
 
     if not row:
@@ -504,17 +627,12 @@ async def approve_config_change(
     if run.get("approved"):
         return {"status": "already_approved", "run_id": run_id}
 
-    # Mark as approved
     try:
-        conn.execute(
-            "UPDATE analysis_runs SET approved = 1 WHERE id = ?", (run_id,)
-        )
+        conn.execute("UPDATE analysis_runs SET approved = 1 WHERE id = ?", (run_id,))
         conn.commit()
     except Exception:
-        logger.exception("approve_update_failed | run_id={run_id}", run_id=run_id)
         raise HTTPException(status_code=500, detail="Failed to approve")
 
-    logger.info("config_change_approved | run_id={run_id}", run_id=run_id)
     return {"status": "approved", "run_id": run_id}
 
 
@@ -523,7 +641,6 @@ async def close_dashboard_position(
     symbol: str,
     x_api_key: Optional[str] = Header(default=None),
 ):
-    """Close an open paper position from the dashboard."""
     _dashboard_api_key_required(x_api_key)
     if not _paper_executor or not _is_paper_mode(_config):
         raise HTTPException(status_code=400, detail="Dashboard close is available only in paper mode")
@@ -531,7 +648,6 @@ async def close_dashboard_position(
     try:
         positions = _paper_executor.get_positions()
     except Exception:
-        logger.exception("dashboard_close_positions_fetch_failed | symbol={symbol}", symbol=symbol)
         raise HTTPException(status_code=500, detail="Failed to fetch paper positions")
 
     position = next(
@@ -554,18 +670,11 @@ async def close_dashboard_position(
             market=market,
         )
     except Exception:
-        logger.exception("dashboard_close_failed | symbol={symbol}", symbol=normalized_symbol)
         raise HTTPException(status_code=500, detail="Paper close failed")
 
     if not result:
         raise HTTPException(status_code=500, detail="Paper close failed")
 
-    logger.info(
-        "dashboard_position_closed | symbol={symbol} market={market} fill_price={fill_price}",
-        symbol=normalized_symbol,
-        market=market,
-        fill_price=result.get("fill_price"),
-    )
     return {
         "status": "closed",
         "symbol": normalized_symbol,
@@ -580,7 +689,6 @@ async def dashboard_manual_order(
     payload: dict = Body(...),
     x_api_key: Optional[str] = Header(default=None),
 ):
-    """Open or close a manual paper trade from the dashboard."""
     _dashboard_api_key_required(x_api_key)
     if not _paper_executor or not _is_paper_mode(_config):
         raise HTTPException(status_code=400, detail="Dashboard manual trading is available only in paper mode")
@@ -604,31 +712,21 @@ async def dashboard_manual_order(
         daily_trade_count = _db.get_daily_trade_count(today_str)
 
         valid, reason = _order_validator.validate(
-            symbol,
-            "buy",
-            quantity,
-            current_positions,
-            daily_trade_count,
-            _kill_switch.halted,
+            symbol, "buy", quantity, current_positions,
+            daily_trade_count, _kill_switch.halted,
             open_symbols=open_symbols,
         )
         if not valid:
             raise HTTPException(status_code=400, detail=reason)
 
         result = _paper_executor.submit_market_order(
-            symbol=symbol,
-            side="buy",
-            quantity=quantity,
-            market_price=market_price,
-            market=market,
+            symbol=symbol, side="buy", quantity=quantity,
+            market_price=market_price, market=market,
             strategy="manual_telegram",
-            stop_loss=0.0,
-            take_profit=0.0,
-            whale_flag=0,
+            stop_loss=0.0, take_profit=0.0, whale_flag=0,
         )
         if not result:
             raise HTTPException(status_code=500, detail=f"Manual buy failed for {symbol}")
-        logger.info("dashboard_manual_buy | symbol={symbol} market={market} qty={qty}", symbol=symbol, market=market, qty=quantity)
         return {
             "status": "opened",
             "action": "buy",
@@ -644,19 +742,16 @@ async def dashboard_manual_order(
     raise HTTPException(status_code=400, detail="Unsupported action. Use buy or sell.")
 
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 # WebSocket endpoints
-# ═══════════════════════════════════════════════════════════════════════════
+# ===================================================================
 
 @router.websocket("/ws/signals")
 async def ws_signals(ws: WebSocket):
-    """Stream signal events as JSON in real-time."""
     await manager.connect("signals", ws)
     try:
         while True:
-            # Keep connection alive; listen for client pings or close
             data = await ws.receive_text()
-            # Echo back as heartbeat acknowledgment
             if data == "ping":
                 await ws.send_json({"type": "pong"})
     except WebSocketDisconnect:
@@ -667,39 +762,54 @@ async def ws_signals(ws: WebSocket):
 
 @router.websocket("/ws/pnl")
 async def ws_pnl(ws: WebSocket):
-    """Stream live dashboard state every 5 seconds."""
     await manager.connect("pnl", ws)
+    logger.info("websocket_connected | channel=pnl total={}", len(manager._connections.get("pnl", [])))
     try:
         while True:
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
-            portfolio = _get_portfolio_stats()
-            open_trades = _db.get_open_trades() if _db else []
+            try:
+                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                daily_pnl = _db.get_daily_pnl(today) if _db else 0.0
+                portfolio = _get_portfolio_stats()
+                open_trades = _db.get_open_trades() if _db else []
 
-            since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-            all_trades = _db.get_trades_since_by_activity(since) if _db else []
-            recent_trades = all_trades[:20]
+                since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+                all_trades = _db.get_trades_since_by_activity(since) if _db else []
+                recent_trades = all_trades[:20]
 
-            uptime_seconds = time.time() - _start_time
+                uptime_seconds = time.time() - _start_time
+                performance = _compute_performance_metrics(30)
 
-            pnl_data = {
-                "type": "pnl_update",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "daily_pnl": round(daily_pnl, 2),
-                "unrealized_pnl": portfolio["unrealized_pnl"],
-                "cash": portfolio["cash"],
-                "invested": portfolio["invested"],
-                "equity": portfolio["equity"],
-                "portfolio_positions": portfolio["positions"],
-                "open_positions": len(open_trades),
-                "open_trades": open_trades,
-                "recent_trades": recent_trades,
-                "kill_switch_active": _is_kill_switch_active(),
-                "uptime_seconds": round(uptime_seconds, 1),
-            }
-            await ws.send_json(pnl_data)
-            await asyncio.sleep(5)
+                pnl_data = {
+                    "type": "pnl_update",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "daily_pnl": round(daily_pnl, 2),
+                    "unrealized_pnl": portfolio["unrealized_pnl"],
+                    "cash": portfolio["cash"],
+                    "invested": portfolio["invested"],
+                    "equity": portfolio["equity"],
+                    "portfolio_positions": portfolio["positions"],
+                    "open_positions": len(open_trades),
+                    "open_trades": open_trades,
+                    "recent_trades": recent_trades,
+                    "kill_switch_active": _is_kill_switch_active(),
+                    "uptime_seconds": round(uptime_seconds, 1),
+                    "performance": performance,
+                }
+                await ws.send_json(pnl_data)
+            except WebSocketDisconnect:
+                raise
+            except Exception:
+                logger.exception("ws_pnl_data_build_error")
+
+            # Use receive_text with timeout to detect client disconnect quickly
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass  # Normal — client didn't send anything, loop again
     except WebSocketDisconnect:
-        await manager.disconnect("pnl", ws)
+        pass
     except Exception:
+        logger.exception("ws_pnl_unexpected_error")
+    finally:
         await manager.disconnect("pnl", ws)
+        logger.info("websocket_disconnected | channel=pnl remaining={}", len(manager._connections.get("pnl", [])))

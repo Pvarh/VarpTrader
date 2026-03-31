@@ -80,6 +80,7 @@ class TradeDatabase:
             self._local.conn = sqlite3.connect(str(self._db_path))
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA journal_mode=WAL")
+            self._local.conn.execute("PRAGMA synchronous=FULL")
         return self._local.conn
 
     @contextmanager
@@ -109,6 +110,13 @@ class TradeDatabase:
             conn.execute("ALTER TABLE trades ADD COLUMN exit_timestamp TEXT")
             conn.commit()
             logger.info("migration_applied | added exit_timestamp column")
+        if "slippage" not in columns:
+            try:
+                conn.execute("ALTER TABLE trades ADD COLUMN slippage REAL DEFAULT 0.0")
+                conn.commit()
+                logger.info("migration_applied | added slippage column")
+            except Exception:
+                pass  # column already exists
 
     def insert_trade(self, trade: Trade) -> int:
         """Insert a new trade record.
@@ -125,8 +133,8 @@ class TradeDatabase:
                 entry_price, exit_price, quantity, stop_loss, take_profit,
                 pnl, pnl_pct, outcome, whale_flag, day_of_week,
                 hour_of_day, market_condition, paper_trade,
-                swing_bias, swing_confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                swing_bias, swing_confidence, slippage
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             trade.timestamp, trade.symbol, trade.market, trade.strategy,
@@ -135,6 +143,7 @@ class TradeDatabase:
             trade.pnl, trade.pnl_pct, trade.outcome, trade.whale_flag,
             trade.day_of_week, trade.hour_of_day, trade.market_condition,
             trade.paper_trade, trade.swing_bias, trade.swing_confidence,
+            trade.slippage,
         )
         with self._cursor() as cur:
             cur.execute(sql, params)
@@ -172,6 +181,34 @@ class TradeDatabase:
         logger.info(
             "trade_exit_updated | trade_id={trade_id} outcome={outcome} pnl={pnl}",
             trade_id=trade_id, outcome=outcome, pnl=pnl,
+        )
+
+    def update_trade_partial_close(
+        self, trade_id: int, closed_qty: float, remaining_qty: float,
+        partial_pnl: float, partial_exit_price: float,
+    ) -> None:
+        """Record a partial profit take on an open trade.
+
+        Updates the quantity to the remaining amount and stores the
+        partial PnL as a note in market_condition for auditability.
+        """
+        sql = """
+            UPDATE trades
+            SET quantity = ?,
+                market_condition = COALESCE(market_condition, '') ||
+                    ' [partial:' || ? || 'qty@' || ? || '=$' || ? || ']'
+            WHERE id = ?
+        """
+        with self._cursor() as cur:
+            cur.execute(sql, (
+                remaining_qty, round(closed_qty, 6),
+                round(partial_exit_price, 2), round(partial_pnl, 2),
+                trade_id,
+            ))
+        logger.info(
+            "trade_partial_close | trade_id={} closed_qty={} remaining={} partial_pnl={}",
+            trade_id, round(closed_qty, 6), round(remaining_qty, 6),
+            round(partial_pnl, 2),
         )
 
     def get_trade_by_id(self, trade_id: int) -> Optional[dict]:
@@ -240,6 +277,23 @@ class TradeDatabase:
 
         with self._cursor() as cur:
             cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def get_recent_closed_by_strategy(
+        self, strategy: str, *, limit: int = 5
+    ) -> list[dict]:
+        """Fetch recent closed trades for a strategy across all symbols."""
+        sql = """
+            SELECT * FROM trades
+            WHERE strategy = ?
+              AND exit_timestamp IS NOT NULL
+              AND outcome IS NOT NULL
+              AND outcome != 'open'
+            ORDER BY exit_timestamp DESC, id DESC LIMIT ?
+        """
+        with self._cursor() as cur:
+            cur.execute(sql, (strategy, limit))
             rows = cur.fetchall()
         return [dict(r) for r in rows]
 

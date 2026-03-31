@@ -348,7 +348,7 @@ class TestNoActionWithinBounds:
 
 
 class TestTrailingStop:
-    """Trailing stop tightens to breakeven when > 50 % to target."""
+    """Continuous trailing stop: 50% breakeven, 75% trail 50%, 100%+ trail 75%."""
 
     def test_trailing_stop_tightens_long(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -357,20 +357,17 @@ class TestTrailingStop:
         """Long trade > 50% to target should have stop tightened to entry.
 
         Entry=100, SL=95, TP=110. Target range=10. 50% threshold=105.
-        Price at 106 (> 105) triggers trailing stop to 100 (breakeven).
-        Price is still below TP (110), so trade stays open.
+        Price at 106 (60% progress) triggers trailing stop to 100 (breakeven).
         """
         trade_id = _insert_open_trade(db, entry_price=100.0, stop_loss=95.0, take_profit=110.0)
         mock_stock_feed.get_latest_price.return_value = 106.0
 
         monitor.check_open_positions()
 
-        # Trade should still be open since 106 < 110 (TP)
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "open"
-
-        # Verify trailing stop was recorded
-        assert trade_id in monitor._trailing_stop_adjusted
+        assert trade_id in monitor._trailing_stop_levels
+        assert monitor._trailing_stop_levels[trade_id] == pytest.approx(100.0)
 
     def test_trailing_stop_triggers_breakeven_exit_long(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -383,14 +380,12 @@ class TestTrailingStop:
         """
         trade_id = _insert_open_trade(db, entry_price=100.0, stop_loss=95.0, take_profit=110.0)
 
-        # Step 1: Price above 50% threshold, trailing stop tightened
         mock_stock_feed.get_latest_price.return_value = 106.0
         monitor.check_open_positions()
 
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "open"
 
-        # Step 2: Price drops to breakeven, tightened stop triggered
         mock_stock_feed.get_latest_price.return_value = 100.0
         monitor.check_open_positions()
 
@@ -405,8 +400,7 @@ class TestTrailingStop:
         """Short trade > 50% to target should have stop tightened to entry.
 
         Entry=100, SL=105, TP=90. Target range=10. 50% threshold=95.
-        Price at 94 (below 95) triggers trailing stop to 100 (breakeven).
-        Price is still above TP (90), so trade stays open.
+        Price at 94 (60% progress) triggers trailing stop to 100 (breakeven).
         """
         trade_id = _insert_open_trade(
             db, direction="short", entry_price=100.0, stop_loss=105.0, take_profit=90.0,
@@ -417,7 +411,8 @@ class TestTrailingStop:
 
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "open"
-        assert trade_id in monitor._trailing_stop_adjusted
+        assert trade_id in monitor._trailing_stop_levels
+        assert monitor._trailing_stop_levels[trade_id] == pytest.approx(100.0)
 
     def test_trailing_stop_triggers_breakeven_exit_short(
         self, db: TradeDatabase, monitor: PositionMonitor, mock_stock_feed: MagicMock,
@@ -431,14 +426,12 @@ class TestTrailingStop:
             db, direction="short", entry_price=100.0, stop_loss=105.0, take_profit=90.0,
         )
 
-        # Step 1: Price below 50% threshold, trailing stop tightened
         mock_stock_feed.get_latest_price.return_value = 94.0
         monitor.check_open_positions()
 
         result = db.get_trade_by_id(trade_id)
         assert result["outcome"] == "open"
 
-        # Step 2: Price rises back to breakeven, tightened stop triggered
         mock_stock_feed.get_latest_price.return_value = 100.0
         monitor.check_open_positions()
 
@@ -452,14 +445,14 @@ class TestTrailingStop:
         """Trade under 50% to target should not have trailing stop activated.
 
         Entry=100, SL=95, TP=110. 50% threshold=105.
-        Price at 103 (below threshold) -- no trailing stop adjustment.
+        Price at 103 (30% progress) -- no trailing stop adjustment.
         """
         trade_id = _insert_open_trade(db, entry_price=100.0, stop_loss=95.0, take_profit=110.0)
         mock_stock_feed.get_latest_price.return_value = 103.0
 
         monitor.check_open_positions()
 
-        assert trade_id not in monitor._trailing_stop_adjusted
+        assert trade_id not in monitor._trailing_stop_levels
 
 
 # ======================================================================

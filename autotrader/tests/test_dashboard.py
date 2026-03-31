@@ -234,13 +234,13 @@ class TestDashboardPage:
         body = resp.text
         assert "Open Positions" in body
         assert "Recent Trades" in body
-        assert "Equity Curve" in body
+        assert "Daily P&L" in body or "Daily P&amp;L" in body
 
     def test_dashboard_has_chart(self, client):
         resp = client.get("/")
         body = resp.text
         assert "<canvas" in body
-        assert "equityChart" in body
+        assert "dailyPnlChart" in body
 
     def test_dashboard_negative_daily_pnl_keeps_minus_sign(self, client):
         import dashboard.router as router_module
@@ -315,13 +315,13 @@ class TestTradesPage:
         assert resp.status_code == 200
         assert "text/html" in resp.headers["content-type"]
         body = resp.text
-        assert "Trade Journal" in body
+        assert "Export CSV" in body
 
     def test_trades_with_filters(self, client):
         resp = client.get("/trades?strategy=ema_cross&days=30")
         assert resp.status_code == 200
         body = resp.text
-        assert "Trade Journal" in body
+        assert "Export CSV" in body
 
     def test_trades_with_outcome_filter(self, client):
         resp = client.get("/trades?outcome=win")
@@ -339,8 +339,8 @@ class TestTradesPage:
 
         resp = client.get("/trades")
         body = resp.text
-        aapl_idx = body.index("<strong>AAPL</strong>")
-        msft_idx = body.index("<strong>MSFT</strong>")
+        aapl_idx = body.index("AAPL")
+        msft_idx = body.index("MSFT")
         assert aapl_idx < msft_idx
 
 

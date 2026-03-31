@@ -45,8 +45,8 @@
     },
     "rsi_momentum": {
       "enabled": true,
-      "rsi_oversold": 28.0,
-      "rsi_overbought": 72.0,
+      "rsi_oversold": 30.0,
+      "rsi_overbought": 70.0,
       "rsi_neutral_low": 45,
       "rsi_neutral_high": 55,
       "stop_loss_pct": 0.025
@@ -54,14 +54,14 @@
     "bollinger_fade": {
       "enabled": true,
       "bb_period": 20,
-      "bb_std": 2.0,
-      "rsi_threshold_low": 35,
-      "rsi_threshold_high": 65
+      "bb_std": 2.2,
+      "rsi_threshold_low": 30,
+      "rsi_threshold_high": 60
     }
   },
   "risk": {
-    "position_size_pct": 0.008,
-    "stop_loss_pct": 0.02,
+    "position_size_pct": 0.005,
+    "stop_loss_pct": 0.015,
     "daily_loss_limit_pct": 0.03,
     "min_reward_ratio": 2.0,
     "atr_period": 14,
@@ -83,7 +83,7 @@
   },
   "swing_advisor": {
     "enabled": true,
-    "min_confidence_to_block": 70,
+    "min_confidence_to_block": 80,
     "model": "claude-sonnet-4-6"
   },
   "analysis": {

@@ -30,6 +30,7 @@ class Trade:
     hour_of_day: Optional[int] = None
     market_condition: Optional[str] = None  # 'trending', 'ranging', 'volatile'
     paper_trade: int = 0
+    slippage: float = 0.0
     swing_bias: Optional[str] = None
     swing_confidence: Optional[int] = None
 

@@ -1,27 +1,4 @@
-"""VWAP Mean Reversion signal strategy.
-
-Generates signals when price deviates significantly from the Volume
-Weighted Average Price and momentum candles confirm a reversion move
-back toward VWAP.
-
-A BUY is triggered when price falls below VWAP by more than the
-configured deviation percentage and recent candles show bullish
-momentum.  A SELL is triggered symmetrically above VWAP with bearish
-momentum confirmation.
-
-The strategy only fires during active market hours: within the first
-180 minutes of open *or* within the last 60 minutes before close.
-
-Config keys used:
-    enabled            (bool)  : Whether this signal is active.
-    vwap_deviation_pct (float) : Required deviation from VWAP as a
-                                 percentage (e.g. 0.3 means 0.3%).
-                                 Divided by 100 internally (default 0.3).
-    momentum_candles   (int)   : Number of recent candles that must confirm
-                                 direction (default 3).
-    stop_loss_pct      (float) : Stop-loss distance as a fraction of entry
-                                 (default 0.01).
-"""
+"""VWAP Reversion signal with ATR-dynamic bands, volume confirmation, and slope filter."""
 
 from __future__ import annotations
 
@@ -32,16 +9,15 @@ from signals.base_signal import BaseSignal, SignalDirection, SignalResult
 
 
 class VWAPReversionSignal(BaseSignal):
-    """VWAP mean-reversion signal with candle-momentum confirmation."""
+    """Mean-reversion signal: fade price when it deviates from VWAP.
+
+    Uses ATR-based dynamic bands instead of fixed percentage, volume
+    confirmation to filter noise, and VWAP slope to avoid fading trends.
+    """
 
     @property
     def name(self) -> str:
-        """Return the unique name of this signal strategy."""
         return "vwap_reversion"
-
-    # ------------------------------------------------------------------
-    # Abstract base method (required by BaseSignal)
-    # ------------------------------------------------------------------
 
     def evaluate(
         self,
@@ -50,178 +26,91 @@ class VWAPReversionSignal(BaseSignal):
         current_price: float,
         market: str,
     ) -> SignalResult:
-        """Generic evaluate entry-point.
-
-        The real logic lives in :meth:`evaluate_from_vwap`.  This method
-        satisfies the abstract interface and always returns a
-        non-triggered result.
-
-        Args:
-            symbol: Trading symbol.
-            candles: Recent OHLCV bars.
-            current_price: Latest market price.
-            market: ``'stock'`` or ``'crypto'``.
-
-        Returns:
-            A :class:`SignalResult` that is never triggered.
-        """
+        """Generic evaluate — not used directly. See evaluate_from_vwap()."""
         return SignalResult(triggered=False, strategy_name=self.name)
-
-    # ------------------------------------------------------------------
-    # Specialised evaluation
-    # ------------------------------------------------------------------
 
     def evaluate_from_vwap(
         self,
         symbol: str,
         current_price: float,
         vwap: float,
-        recent_candles: list[OHLCV],
-        minutes_since_open: int,
-        minutes_before_close: int,
+        atr: float,
+        vwap_slope: float,
+        current_volume: float,
+        avg_volume: float,
+        market: str,
     ) -> SignalResult:
-        """Evaluate a VWAP mean-reversion signal.
+        """Evaluate VWAP reversion with dynamic bands and filters."""
+        no_signal = SignalResult(triggered=False, strategy_name=self.name)
 
-        Args:
-            symbol: Trading symbol (e.g. ``'AAPL'``).
-            current_price: Most recent market price.
-            vwap: Current session VWAP value.
-            recent_candles: Recent OHLCV bars used for momentum check,
-                most recent last.
-            minutes_since_open: Minutes elapsed since market open.
-            minutes_before_close: Minutes remaining until market close.
-
-        Returns:
-            A :class:`SignalResult` indicating whether a reversion trade
-            should be taken.
-        """
-        # --- Guard: disabled ------------------------------------------------
         if not self.is_enabled():
+            return no_signal
+
+        band_mult = self.config.get("atr_band_multiplier", 1.5)
+        vol_mult = self.config.get("volume_confirmation_mult", 1.2)
+        slope_max = self.config.get("slope_max", 0.001)
+        sl_atr_mult = self.config.get("stop_loss_atr_mult", 1.0)
+        rr_ratio = self.config.get("rr_ratio", 2.0)
+
+        # Guard: slope too steep
+        if abs(vwap_slope) > slope_max:
             logger.debug(
-                "signal_disabled | signal={signal} symbol={symbol}",
-                signal=self.name, symbol=symbol,
-            )
-            return SignalResult(triggered=False, strategy_name=self.name)
-
-        # --- Config values ---------------------------------------------------
-        vwap_deviation_pct: float = self.config.get("vwap_deviation_pct", 0.3)
-        deviation_pct = vwap_deviation_pct / 100  # 0.3% -> 0.003
-        momentum_candles: int = self.config.get("momentum_candles", 3)
-        stop_loss_pct: float = self.config.get("stop_loss_pct", 0.01)
-
-        # --- Guard: session timing -------------------------------------------
-        in_early_window = minutes_since_open <= 180
-        in_late_window = minutes_before_close <= 60
-
-        if not (in_early_window or in_late_window):
-            logger.debug(
-                "outside_valid_session_window | signal={signal} symbol={symbol} "
-                "minutes_since_open={minutes_since_open} "
-                "minutes_before_close={minutes_before_close}",
-                signal=self.name, symbol=symbol,
-                minutes_since_open=minutes_since_open,
-                minutes_before_close=minutes_before_close,
+                "vwap_reversion_slope_blocked | symbol={} slope={:.6f} max={}",
+                symbol, vwap_slope, slope_max,
             )
             return SignalResult(
-                triggered=False,
-                strategy_name=self.name,
-                reason="Outside valid session window",
+                triggered=False, strategy_name=self.name,
+                reason=f"VWAP slope {vwap_slope:.6f} exceeds max {slope_max}",
             )
 
-        # --- Guard: not enough candles for momentum check --------------------
-        if len(recent_candles) < momentum_candles:
+        # Guard: volume too low
+        vol_threshold = avg_volume * vol_mult
+        if current_volume < vol_threshold:
             logger.debug(
-                "insufficient_candles | signal={signal} symbol={symbol} "
-                "available={available} required={required}",
-                signal=self.name, symbol=symbol,
-                available=len(recent_candles), required=momentum_candles,
+                "vwap_reversion_volume_blocked | symbol={} vol={} threshold={}",
+                symbol, current_volume, vol_threshold,
             )
             return SignalResult(
-                triggered=False,
-                strategy_name=self.name,
-                reason="Not enough candles for momentum check",
+                triggered=False, strategy_name=self.name,
+                reason=f"Volume {current_volume:.0f} below threshold {vol_threshold:.0f}",
             )
 
-        # --- Deviation & momentum detection ----------------------------------
-        lower_band = vwap * (1 - deviation_pct)
-        upper_band = vwap * (1 + deviation_pct)
+        # Dynamic bands
+        band_distance = atr * band_mult
+        lower_band = vwap - band_distance
+        upper_band = vwap + band_distance
 
-        tail_candles = recent_candles[-momentum_candles:]
-        all_bullish = all(c.close > c.open for c in tail_candles)
-        all_bearish = all(c.close < c.open for c in tail_candles)
-
-        direction: SignalDirection | None = None
-        reason = ""
-
-        if current_price < lower_band and all_bullish:
+        direction = None
+        if current_price <= lower_band:
             direction = SignalDirection.LONG
-            reason = (
-                f"Price ({current_price:.4f}) below VWAP lower band "
-                f"({lower_band:.4f}) with {momentum_candles} bullish candles"
-            )
-        elif current_price > upper_band and all_bearish:
+        elif current_price >= upper_band:
             direction = SignalDirection.SHORT
-            reason = (
-                f"Price ({current_price:.4f}) above VWAP upper band "
-                f"({upper_band:.4f}) with {momentum_candles} bearish candles"
-            )
+        else:
+            return no_signal
 
-        if direction is None:
-            logger.debug(
-                "no_reversion_signal | signal={signal} symbol={symbol} "
-                "price={price} vwap={vwap} lower_band={lower_band} "
-                "upper_band={upper_band} all_bullish={all_bullish} "
-                "all_bearish={all_bearish}",
-                signal=self.name, symbol=symbol,
-                price=current_price, vwap=vwap,
-                lower_band=lower_band, upper_band=upper_band,
-                all_bullish=all_bullish, all_bearish=all_bearish,
-            )
+        # Swing bias check
+        if self.check_swing_bias(symbol, direction):
             return SignalResult(
-                triggered=False,
-                strategy_name=self.name,
-                reason="No VWAP reversion setup",
+                triggered=False, strategy_name=self.name,
+                reason=f"Swing bias blocks {direction.value}",
             )
 
-        # --- Swing bias check ------------------------------------------------
-        if not self.check_swing_bias(symbol, direction):
-            logger.info(
-                "swing_bias_blocked | signal={signal} symbol={symbol} "
-                "direction={direction}",
-                signal=self.name, symbol=symbol,
-                direction=direction.value,
-            )
-            return SignalResult(
-                triggered=False,
-                strategy_name=self.name,
-                reason="Blocked by swing bias",
-            )
-
-        # --- Price levels ----------------------------------------------------
+        # Price levels
         entry_price = current_price
-        stop_distance = entry_price * stop_loss_pct
+        sl_distance = atr * sl_atr_mult
 
         if direction == SignalDirection.LONG:
-            stop_loss = entry_price - stop_distance
-            take_profit = entry_price + (entry_price - stop_loss) * 2.0
+            stop_loss = entry_price - sl_distance
+            take_profit = vwap
         else:
-            stop_loss = entry_price + stop_distance
-            take_profit = entry_price - (stop_loss - entry_price) * 2.0
+            stop_loss = entry_price + sl_distance
+            take_profit = vwap
 
         logger.info(
-            "signal_triggered | signal={signal} symbol={symbol} "
-            "direction={direction} entry={entry} stop_loss={stop_loss} "
-            "take_profit={take_profit} vwap={vwap} "
-            "deviation_pct={deviation_pct} momentum_candles={momentum_candles} "
-            "minutes_since_open={minutes_since_open} "
-            "minutes_before_close={minutes_before_close}",
-            signal=self.name, symbol=symbol,
-            direction=direction.value, entry=entry_price,
-            stop_loss=stop_loss, take_profit=take_profit,
-            vwap=vwap, deviation_pct=deviation_pct,
-            momentum_candles=momentum_candles,
-            minutes_since_open=minutes_since_open,
-            minutes_before_close=minutes_before_close,
+            "vwap_reversion_triggered | symbol={} dir={} entry={:.2f} sl={:.2f} tp={:.2f} "
+            "vwap={:.2f} atr={:.4f} slope={:.6f}",
+            symbol, direction.value, entry_price, stop_loss, take_profit,
+            vwap, atr, vwap_slope,
         )
 
         return SignalResult(
@@ -231,7 +120,9 @@ class VWAPReversionSignal(BaseSignal):
             entry_price=entry_price,
             stop_loss=stop_loss,
             take_profit=take_profit,
-            confidence=0.6,
+            confidence=0.60,
             strategy_name=self.name,
-            reason=reason,
+            reason=f"VWAP reversion {direction.value}: price {entry_price:.2f} "
+                   f"beyond {'lower' if direction == SignalDirection.LONG else 'upper'} "
+                   f"band, slope flat ({vwap_slope:.6f}), volume confirmed",
         )

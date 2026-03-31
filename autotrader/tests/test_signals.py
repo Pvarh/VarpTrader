@@ -1,5 +1,7 @@
 """Tests for all trading signal strategies."""
 
+from __future__ import annotations
+
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -11,6 +13,7 @@ sys.path.insert(0, ".")
 from journal.models import OHLCV
 from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
+from signals.vwap_reversion import VWAPReversionSignal
 
 
 # ---------------------------------------------------------------------------
@@ -539,125 +542,117 @@ class TestEMACrossSwingBias:
 # VWAP Reversion
 # ===========================================================================
 
-class TestVWAPReversion:
-    """Tests for the VWAP mean reversion signal."""
-
+class TestVWAPReversionRedesign:
     @pytest.fixture
     def config(self) -> dict:
         return {
             "enabled": True,
-            "vwap_deviation_pct": 0.3,  # 0.3% -> 0.003 after /100
-            "momentum_candles": 3,
+            "atr_band_multiplier": 1.5,
+            "atr_period": 14,
+            "volume_confirmation_mult": 1.2,
+            "slope_max": 0.001,
+            "slope_lookback": 20,
+            "stop_loss_atr_mult": 1.0,
+            "rr_ratio": 2.0,
         }
 
     @pytest.fixture(autouse=True)
-    def mock_swing_advisor(self):
-        with patch(
-            "analysis.swing_advisor.SwingAdvisor.should_block_trade",
-            return_value=False,
-        ):
+    def _no_swing_block(self):
+        with patch("signals.vwap_reversion.VWAPReversionSignal.check_swing_bias", return_value=False):
             yield
 
-    def test_long_signal_below_vwap_with_bullish_momentum(self, config: dict) -> None:
-        """BUY when price is 0.3% below VWAP and last 3 candles show bullish momentum."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        vwap = 100.0
-        price = 99.65  # 0.35% below VWAP (below the 0.3% band = 99.7)
-        # Last 3 candles bullish: each close > open
-        candles = [
-            make_candle(close=99.5, open_=99.3, ts_offset_min=i * 5)
-            for i in range(3)
-        ]
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=price, vwap=vwap,
-            recent_candles=candles, minutes_since_open=60,
-            minutes_before_close=120,
+    def test_long_below_lower_band(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=95.0, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is True
+        assert not result.triggered
+
+    def test_long_triggers_at_band(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
+        )
+        assert result.triggered
         assert result.direction == SignalDirection.LONG
+        assert result.take_profit > result.entry_price
+        assert result.stop_loss < result.entry_price
 
-    def test_short_signal_above_vwap_with_bearish_momentum(self, config: dict) -> None:
-        """SELL when price is 0.3% above VWAP and last 3 candles bearish."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        vwap = 100.0
-        price = 100.35  # 0.35% above VWAP (above the 0.3% band = 100.3)
-        candles = [
-            make_candle(close=100.3, open_=100.5, ts_offset_min=i * 5)
-            for i in range(3)
-        ]
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=price, vwap=vwap,
-            recent_candles=candles, minutes_since_open=60,
-            minutes_before_close=120,
+    def test_short_triggers_at_upper_band(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=107.0, vwap=100.0,
+            atr=4.0, vwap_slope=-0.0002, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is True
+        assert result.triggered
         assert result.direction == SignalDirection.SHORT
+        assert result.take_profit < result.entry_price
+        assert result.stop_loss > result.entry_price
 
-    def test_no_signal_when_within_vwap_band(self, config: dict) -> None:
-        """No signal when price is within 0.3% of VWAP."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=100.1, vwap=100.0,
-            recent_candles=make_candle_series([100.0, 100.05, 100.1]),
-            minutes_since_open=60, minutes_before_close=120,
+    def test_no_trigger_slope_too_steep(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.005, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is False
+        assert not result.triggered
+        assert "slope" in result.reason.lower()
 
-    def test_no_signal_outside_valid_trading_hours(self, config: dict) -> None:
-        """No signal in mid-session (only first 3 hours and last 1 hour)."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=99.5, vwap=100.0,
-            recent_candles=make_candle_series([99.4, 99.45, 99.5]),
-            minutes_since_open=200,  # > 180 min
-            minutes_before_close=120,  # > 60 min
+    def test_no_trigger_low_volume(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=800.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is False
+        assert not result.triggered
+        assert "volume" in result.reason.lower()
+
+    def test_disabled(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
+        )
+        assert not result.triggered
 
 
 # ===========================================================================
 # VWAP Reversion -- Swing Bias Blocking
 # ===========================================================================
 
-class TestVWAPReversionSwingBias:
-    """Tests that swing bias blocking works for VWAP reversion signals."""
-
+class TestVWAPReversionSwingBiasRedesign:
     @pytest.fixture
     def config(self) -> dict:
         return {
             "enabled": True,
-            "vwap_deviation_pct": 0.3,
-            "momentum_candles": 3,
+            "atr_band_multiplier": 1.5,
+            "atr_period": 14,
+            "volume_confirmation_mult": 1.2,
+            "slope_max": 0.001,
+            "slope_lookback": 20,
+            "stop_loss_atr_mult": 1.0,
+            "rr_ratio": 2.0,
         }
 
     def test_long_blocked_by_swing_bias(self, config: dict) -> None:
-        """VWAP long signal is blocked when swing advisor says to block."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        candles = [
-            make_candle(close=99.5, open_=99.3, ts_offset_min=i * 5)
-            for i in range(3)
-        ]
-        with patch(
-            "analysis.swing_advisor.SwingAdvisor.should_block_trade",
-            return_value=True,
-        ):
-            result = signal.evaluate_from_vwap(
-                symbol="TEST", current_price=99.65, vwap=100.0,
-                recent_candles=candles, minutes_since_open=60,
-                minutes_before_close=120,
+        with patch("signals.vwap_reversion.VWAPReversionSignal.check_swing_bias", return_value=True):
+            sig = VWAPReversionSignal(config)
+            result = sig.evaluate_from_vwap(
+                symbol="AAPL", current_price=93.5, vwap=100.0,
+                atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+                avg_volume=1000.0, market="stock",
             )
-        assert result.triggered is False
-        assert "swing bias" in result.reason.lower()
+            assert not result.triggered
+            assert "swing" in result.reason.lower()
 
 
 # ===========================================================================

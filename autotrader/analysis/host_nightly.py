@@ -171,8 +171,12 @@ def finalize_host_nightly(state_file: str, response_file: str) -> dict[str, obje
     if report_data.get("total_trades", 0) >= min_trades:
         recommendations = LLMAdvisor.parse_response(raw_output)
         approved, rejected = updater.validate_changes(recommendations)
-        if approved and auto_apply:
-            updater.apply_changes(approved)
+        # Never auto-apply config changes; overseer handles config.
+        if approved:
+            logger.info(
+                "nightly_config_recommendations | changes={} (not applied, overseer handles config)",
+                approved,
+            )
 
     report_md = builder.build_daily_report(
         report_data,
@@ -186,7 +190,7 @@ def finalize_host_nightly(state_file: str, response_file: str) -> dict[str, obje
             report_data,
             approved,
             rejected,
-            auto_apply=auto_apply,
+            auto_apply=False,  # Never auto-apply; overseer handles config
             min_trades=None if report_data.get("total_trades", 0) >= min_trades else min_trades,
         ),
         parse_mode="",
@@ -197,7 +201,7 @@ def finalize_host_nightly(state_file: str, response_file: str) -> dict[str, obje
             trades_analyzed=report_data.get("total_trades", 0),
             report_markdown=report_md,
             config_changes_json=json.dumps(approved) if approved else None,
-            approved=1 if (approved and auto_apply) else 0,
+            approved=0,  # Recommendations only; overseer applies
         )
     )
     logger.info(

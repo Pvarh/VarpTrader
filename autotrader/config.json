@@ -50,8 +50,8 @@
     },
     "rsi_momentum": {
       "enabled": true,
-      "rsi_oversold": 30.0,
-      "rsi_overbought": 70.0,
+      "rsi_oversold": 35.0,
+      "rsi_overbought": 65.0,
       "rsi_neutral_low": 45,
       "rsi_neutral_high": 55,
       "stop_loss_pct": 0.025
@@ -115,7 +115,7 @@
     "min_winrate_diff_to_suggest": 0.1,
     "model": "claude-sonnet-4-6",
     "use_batch_api": true,
-    "auto_apply_changes": true
+    "auto_apply_changes": false
   },
   "go_live_thresholds": {
     "orb_min_win_rate": 0.56,

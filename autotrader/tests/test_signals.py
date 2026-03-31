@@ -1026,3 +1026,31 @@ class TestVolumeProfileIndicator:
         assert poc == 0.0
         assert vah == 0.0
         assert val == 0.0
+
+
+class TestVWAPSlopeIndicator:
+    def test_flat_vwap_returns_near_zero(self) -> None:
+        vwap_values = [100.0] * 30
+        slope = Indicators.vwap_slope(vwap_values, lookback=20)
+        assert abs(slope) < 0.0001
+
+    def test_uptrending_vwap_positive_slope(self) -> None:
+        vwap_values = [100.0 + i * 0.1 for i in range(30)]
+        slope = Indicators.vwap_slope(vwap_values, lookback=20)
+        assert slope > 0
+
+    def test_downtrending_vwap_negative_slope(self) -> None:
+        vwap_values = [100.0 - i * 0.1 for i in range(30)]
+        slope = Indicators.vwap_slope(vwap_values, lookback=20)
+        assert slope < 0
+
+    def test_insufficient_data_returns_zero(self) -> None:
+        slope = Indicators.vwap_slope([100.0], lookback=20)
+        assert slope == 0.0
+
+    def test_normalization_across_price_levels(self) -> None:
+        low = [100.0 + i * 0.1 for i in range(30)]
+        high = [50000.0 + i * 50.0 for i in range(30)]
+        slope_low = Indicators.vwap_slope(low, lookback=20)
+        slope_high = Indicators.vwap_slope(high, lookback=20)
+        assert abs(slope_low - slope_high) < abs(slope_low) * 0.5

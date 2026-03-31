@@ -548,3 +548,44 @@ class Indicators:
         vah = price_low + (hi_idx + 1) * bin_width
 
         return poc_price, vah, val
+
+    @staticmethod
+    def vwap_slope(vwap_values: list[float], lookback: int = 20) -> float:
+        """Compute normalized linear regression slope of VWAP.
+
+        Args:
+            vwap_values: List of VWAP values (time series).
+            lookback: Number of recent values to use for regression.
+
+        Returns:
+            Normalized slope (slope / current_vwap). Near 0 = flat,
+            large positive/negative = trending. Returns 0.0 if insufficient data.
+        """
+        if len(vwap_values) < 2:
+            return 0.0
+
+        window = vwap_values[-lookback:]
+        n = len(window)
+        if n < 2:
+            return 0.0
+
+        sum_x = 0.0
+        sum_y = 0.0
+        sum_xy = 0.0
+        sum_x2 = 0.0
+        for i, v in enumerate(window):
+            sum_x += i
+            sum_y += v
+            sum_xy += i * v
+            sum_x2 += i * i
+
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return 0.0
+
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        current_vwap = window[-1]
+        if current_vwap == 0:
+            return 0.0
+
+        return slope / current_vwap

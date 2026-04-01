@@ -50,14 +50,14 @@
     },
     "rsi_momentum": {
       "enabled": true,
-      "rsi_oversold": 35.0,
-      "rsi_overbought": 65.0,
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
       "rsi_neutral_low": 45,
       "rsi_neutral_high": 55,
       "stop_loss_pct": 0.025
     },
     "bollinger_fade": {
-      "enabled": true,
+      "enabled": false,
       "bb_period": 20,
       "bb_std": 2.2,
       "rsi_threshold_low": 30,

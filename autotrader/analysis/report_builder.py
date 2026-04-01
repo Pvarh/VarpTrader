@@ -123,12 +123,12 @@ class ReportBuilder:
 
         # ---- Config changes ----
         if config_changes:
-            lines.append("*Config Changes Applied*")
+            lines.append("*Config Changes Recommended*")
             for param, value in config_changes.items():
                 lines.append(f"  {param}: {value}")
             lines.append("")
         else:
-            lines.append("_No config changes applied._")
+            lines.append("_No config changes recommended._")
             lines.append("")
 
         # ---- Rejected changes ----

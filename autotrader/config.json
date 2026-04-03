@@ -40,7 +40,7 @@
       "volume_confirmation": true
     },
     "vwap_reversion": {
-      "enabled": false,
+      "enabled": true,
       "atr_band_multiplier": 1.5,
       "atr_period": 14,
       "volume_confirmation_mult": 1.2,
@@ -68,7 +68,7 @@
       "num_bins": 20,
       "proximity_pct": 0.002,
       "bounce_candles": 2,
-      "min_poc_volume_pct": 0.15,
+      "min_poc_volume_pct": 0.12,
       "stop_loss_pct": 0.01
     },
     "macd_divergence": {

@@ -1763,16 +1763,14 @@ class AutoTrader:
                 rejected,
                 auto_apply=False,
             )
-            if approved:
-                self.telegram.send_message_with_buttons(
-                    text=summary_text,
-                    buttons=[[
-                        {"text": "Approve", "callback_data": f"approve:{run_id}"},
-                        {"text": "Reject", "callback_data": f"reject:{run_id}"},
-                    ]],
-                )
-            else:
-                self.telegram.send_message(summary_text, parse_mode="")
+            buttons = [[
+                {"text": "Approve", "callback_data": f"approve:{run_id}"},
+                {"text": "Reject", "callback_data": f"reject:{run_id}"},
+            ]]
+            self.telegram.send_message_with_buttons(
+                text=summary_text,
+                buttons=buttons,
+            )
 
             logger.info("nightly_analysis_complete")
 
@@ -2246,6 +2244,10 @@ class AutoTrader:
                     self._cmd_buy(argument)
                 elif cmd == "/sell":
                     self._cmd_sell(argument)
+                elif cmd == "/approve":
+                    self._cmd_approve_reject(action="approve", run_id_str=argument)
+                elif cmd == "/reject":
+                    self._cmd_approve_reject(action="reject", run_id_str=argument)
                 elif cmd == "/help":
                     self._cmd_help()
                 else:
@@ -2423,6 +2425,43 @@ class AutoTrader:
         )
         logger.info("kill_switch_manual_reset")
 
+    def _cmd_approve_reject(self, action: str, run_id_str: str) -> None:
+        """Handle /approve [run_id] and /reject [run_id] commands."""
+        # If no run_id given, use the latest pending run
+        if not run_id_str:
+            try:
+                with self.db._cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM analysis_runs WHERE approved = 0 "
+                        "ORDER BY id DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        self.telegram.send_message("No pending analysis runs.", parse_mode="")
+                        return
+                    run_id = row["id"]
+            except Exception:
+                logger.exception("telegram_approve_reject_lookup_error")
+                self.telegram.send_message("Error looking up pending runs.", parse_mode="")
+                return
+        else:
+            try:
+                run_id = int(run_id_str)
+            except ValueError:
+                self.telegram.send_message(f"Invalid run ID: {run_id_str}", parse_mode="")
+                return
+
+        # Reuse the callback handler logic
+        fake_callback = {
+            "id": "",
+            "data": f"{action}:{run_id}",
+            "message": {"chat": {"id": self.telegram._chat_id}},
+        }
+        self._handle_telegram_callback(fake_callback)
+        # Send confirmation since answer_callback_query won't show for fake callbacks
+        label = "APPROVED" if action == "approve" else "REJECTED"
+        self.telegram.send_message(f"Analysis run #{run_id} {label}.", parse_mode="")
+
     def _cmd_help(self) -> None:
         self.telegram.send_message(
             "VarpTrader Commands:\n"
@@ -2432,6 +2471,8 @@ class AutoTrader:
             "/config - Strategy and risk config\n"
             "/buy SYMBOL - Open a manual paper long (also supports 'buy SYMBOL')\n"
             "/sell SYMBOL - Close an open paper position (also supports 'sell SYMBOL')\n"
+            "/approve [ID] - Approve pending nightly config changes\n"
+            "/reject [ID] - Reject pending nightly config changes\n"
             "/kill - Activate kill switch\n"
             "/resume - Reset kill switch\n"
             "/help - This message",

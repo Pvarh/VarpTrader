@@ -129,8 +129,8 @@ class StockFeed:
                 price=price,
             )
             return price
-        except Exception:
-            logger.exception("latest_price_error | symbol={symbol}", symbol=symbol)
+        except Exception as exc:
+            logger.warning("latest_price_error | symbol={symbol} err={err}", symbol=symbol, err=exc)
             return 0.0
 
     # ------------------------------------------------------------------

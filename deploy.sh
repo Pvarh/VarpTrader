@@ -48,7 +48,6 @@ else
     # Deploy all Python files + templates (excluding blocked files)
     echo "Syncing all code to VPS..."
     rsync -avz --progress \
-        --chown=root:root \
         --include='*.py' \
         --include='*.html' \
         --include='*/' \
@@ -63,8 +62,8 @@ else
         --exclude='weekly_bias.json' \
         "$LOCAL_DIR/" "$VPS:$REMOTE_DIR/"
 
-    # Restore config.json ACL so trader user (overseer) can write it
-    ssh "$VPS" "setfacl -m u:trader:rw,m::rw $REMOTE_DIR/config.json 2>/dev/null || true"
+    # Fix ownership (macOS rsync doesn't support --chown) and restore ACL
+    ssh "$VPS" "chown -R root:root $REMOTE_DIR/*.py $REMOTE_DIR/**/*.py 2>/dev/null || true; setfacl -m u:trader:rw,m::rw $REMOTE_DIR/config.json 2>/dev/null || true"
 fi
 
 echo ""

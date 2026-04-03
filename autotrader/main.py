@@ -336,6 +336,7 @@ class AutoTrader:
             telegram=self.telegram,
             paper_trade=self.paper_trade,
             paper_executor=self.paper_executor,
+            config=self.config,
         )
 
         # -- Regime / sentiment / session bias ------------------------------
@@ -452,6 +453,8 @@ class AutoTrader:
             stock_feed=self.stock_feed,
             crypto_feed=self.crypto_feed,
             order_validator=self.order_validator,
+            telegram=self.telegram,
+            config_updater=self.config_updater,
         )
 
     def reload_config(self) -> None:
@@ -1731,16 +1734,6 @@ class AutoTrader:
                 report_data, config_changes=approved, rejected=rejected
             )
             self.telegram.send_daily_report(report_md)
-            self.telegram.send_message(
-                _build_nightly_change_summary(
-                    config_before,
-                    report_data,
-                    approved,
-                    rejected,
-                    auto_apply=False,  # Never auto-apply; overseer handles config
-                ),
-                parse_mode="",
-            )
 
             from journal.models import AnalysisRun
 
@@ -1748,9 +1741,28 @@ class AutoTrader:
                 trades_analyzed=report_data.get("total_trades", 0),
                 report_markdown=report_md,
                 config_changes_json=json.dumps(approved) if approved else None,
-                approved=0,  # Recommendations only; overseer applies
+                approved=0,  # Recommendations only
             )
-            self.db.insert_analysis_run(run)
+            run_id = self.db.insert_analysis_run(run)
+
+            summary_text = _build_nightly_change_summary(
+                config_before,
+                report_data,
+                approved,
+                rejected,
+                auto_apply=False,
+            )
+            if approved:
+                self.telegram.send_message_with_buttons(
+                    text=summary_text,
+                    buttons=[[
+                        {"text": "Approve", "callback_data": f"approve:{run_id}"},
+                        {"text": "Reject", "callback_data": f"reject:{run_id}"},
+                    ]],
+                )
+            else:
+                self.telegram.send_message(summary_text, parse_mode="")
+
             logger.info("nightly_analysis_complete")
 
         except Exception:
@@ -2190,6 +2202,10 @@ class AutoTrader:
                 return
 
             for update in updates:
+                if "callback_query" in update:
+                    self._handle_telegram_callback(update["callback_query"])
+                    continue
+
                 msg = update.get("message", {})
                 text = (msg.get("text") or "").strip()
                 chat_id = str(msg.get("chat", {}).get("id", ""))
@@ -2228,6 +2244,81 @@ class AutoTrader:
                     )
         except Exception:
             logger.debug("telegram_poll_error")
+
+    def _handle_telegram_callback(self, callback_query: dict) -> None:
+        """Process a Telegram inline keyboard callback (approve/reject config changes)."""
+        callback_id = callback_query.get("id", "")
+        data = callback_query.get("data", "")
+        message = callback_query.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        message_id = message.get("message_id")
+
+        if ":" not in data:
+            self.telegram.answer_callback_query(callback_id, "Invalid action")
+            return
+
+        action, run_id_str = data.split(":", 1)
+        try:
+            run_id = int(run_id_str)
+        except ValueError:
+            self.telegram.answer_callback_query(callback_id, "Invalid run ID")
+            return
+
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT * FROM analysis_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if not row:
+            self.telegram.answer_callback_query(callback_id, f"Run {run_id} not found")
+            return
+
+        run = dict(row)
+        if run.get("approved") != 0:
+            label = "approved" if run["approved"] == 1 else "rejected"
+            self.telegram.answer_callback_query(callback_id, f"Already {label}")
+            return
+
+        if action == "approve":
+            changes_json = run.get("config_changes_json")
+            applied = False
+            if changes_json:
+                changes = json.loads(changes_json)
+                approved_changes, _ = self.config_updater.validate_changes(changes)
+                if approved_changes:
+                    self.config_updater.apply_changes(approved_changes)
+                    self.config = load_config()
+                    applied = True
+                    logger.info(
+                        "telegram_config_approved | run_id={} changes={}",
+                        run_id,
+                        list(approved_changes.keys()),
+                    )
+
+            conn.execute("UPDATE analysis_runs SET approved = 1 WHERE id = ?", (run_id,))
+            conn.commit()
+
+            toast = "Approved and applied" if applied else "Approved (no changes to apply)"
+            self.telegram.answer_callback_query(callback_id, toast)
+            if message_id:
+                original_text = message.get("text", "")
+                self.telegram.edit_message_text(
+                    chat_id, message_id,
+                    f"{original_text}\n\n--- APPROVED ---",
+                )
+
+        elif action == "reject":
+            conn.execute("UPDATE analysis_runs SET approved = 2 WHERE id = ?", (run_id,))
+            conn.commit()
+            logger.info("telegram_config_rejected | run_id={}", run_id)
+            self.telegram.answer_callback_query(callback_id, "Rejected")
+            if message_id:
+                original_text = message.get("text", "")
+                self.telegram.edit_message_text(
+                    chat_id, message_id,
+                    f"{original_text}\n\n--- REJECTED ---",
+                )
+        else:
+            self.telegram.answer_callback_query(callback_id, "Unknown action")
 
     def _cmd_status(self) -> None:
         equity = 0.0
@@ -2375,6 +2466,8 @@ def run_live(args) -> None:
         stock_feed=trader.stock_feed,
         crypto_feed=trader.crypto_feed,
         order_validator=trader.order_validator,
+        telegram=trader.telegram,
+        config_updater=trader.config_updater,
     )
 
     # -- Start dashboard in background thread ------------------------------

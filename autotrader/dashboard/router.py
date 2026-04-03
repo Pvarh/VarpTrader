@@ -45,6 +45,8 @@ _paper_executor = None  # PaperExecutor instance
 _stock_feed = None
 _crypto_feed = None
 _order_validator = None
+_telegram = None  # TelegramAlert instance
+_config_updater = None  # ConfigUpdater instance
 
 
 def init(
@@ -56,15 +58,20 @@ def init(
     stock_feed=None,
     crypto_feed=None,
     order_validator=None,
+    telegram=None,
+    config_updater=None,
 ) -> None:
     """Called from main.py to inject dependencies."""
-    global _db, _analyzer, _config, _kill_switch, _paper_executor, _stock_feed, _crypto_feed, _order_validator
+    global _db, _analyzer, _config, _kill_switch, _paper_executor
+    global _stock_feed, _crypto_feed, _order_validator, _telegram, _config_updater
     _db, _analyzer, _config = db, analyzer, config
     _kill_switch = kill_switch
     _paper_executor = paper_executor
     _stock_feed = stock_feed
     _crypto_feed = crypto_feed
     _order_validator = order_validator
+    _telegram = telegram
+    _config_updater = config_updater
     logger.info("dashboard_router_initialized")
 
 

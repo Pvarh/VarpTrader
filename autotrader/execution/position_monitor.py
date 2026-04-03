@@ -77,6 +77,7 @@ class PositionMonitor:
         telegram: TelegramAlert,
         paper_trade: bool = True,
         paper_executor: PaperExecutor | None = None,
+        config: dict | None = None,
     ) -> None:
         """Initialize with all required dependencies."""
         self._db: TradeDatabase = db
@@ -87,6 +88,7 @@ class PositionMonitor:
         self._telegram: TelegramAlert = telegram
         self._paper_trade: bool = paper_trade
         self._paper_executor: PaperExecutor | None = paper_executor
+        self._config: dict = config or {}
 
         # Map trade_id → best trailing stop level seen so far.
         # The stop is only ever ratcheted forward, never backwards.
@@ -166,6 +168,31 @@ class PositionMonitor:
                     symbol=symbol,
                 )
                 continue
+
+            # 1b. Check max hold time
+            max_hold = self._get_max_hold_hours(market)
+            if max_hold is not None and max_hold > 0:
+                trade_ts = trade.get("timestamp", "")
+                if trade_ts:
+                    try:
+                        trade_dt = datetime.fromisoformat(trade_ts)
+                        if trade_dt.tzinfo is None:
+                            trade_dt = trade_dt.replace(tzinfo=timezone.utc)
+                        age_hours = (datetime.now(timezone.utc) - trade_dt).total_seconds() / 3600
+                        if age_hours >= max_hold:
+                            logger.info(
+                                "max_hold_time_exceeded | trade_id={trade_id} symbol={symbol} "
+                                "market={market} age_hours={age_hours} max_hours={max_hours}",
+                                trade_id=trade_id,
+                                symbol=symbol,
+                                market=market,
+                                age_hours=round(age_hours, 1),
+                                max_hours=max_hold,
+                            )
+                            self._close_trade(trade, exit_price=current_price, reason="max_hold_time")
+                            continue
+                    except (ValueError, TypeError):
+                        pass
 
             # 2. Trailing stop: tighten to breakeven when > 50 % to target
             stop_loss = self._apply_trailing_stop(
@@ -253,6 +280,19 @@ class PositionMonitor:
                 direction=direction,
                 current_price=current_price,
             )
+
+    # ------------------------------------------------------------------
+    # Max hold time
+    # ------------------------------------------------------------------
+
+    def _get_max_hold_hours(self, market: str) -> float | None:
+        """Return configured max hold hours for the given market type."""
+        risk_cfg = self._config.get("risk", {})
+        if market == "crypto":
+            return risk_cfg.get("max_hold_hours_crypto")
+        if market == "stock":
+            return risk_cfg.get("max_hold_hours_stock")
+        return None
 
     # ------------------------------------------------------------------
     # Price retrieval

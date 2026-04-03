@@ -96,7 +96,9 @@ def test_run_nightly_analysis_sends_change_summary() -> None:
         AutoTrader.run_nightly_analysis(trader)
 
     trader.telegram.send_daily_report.assert_called_once_with("daily report")
-    summary_text = trader.telegram.send_message.call_args.args[0]
+    # With approved changes, code sends buttons instead of plain message
+    call_kwargs = trader.telegram.send_message_with_buttons.call_args
+    summary_text = call_kwargs.kwargs.get("text") or call_kwargs.args[0]
     assert "NIGHTLY CONFIG UPDATE" in summary_text
     assert "Pending approval: 1" in summary_text
     assert "stop_loss_pct: 0.015 -> 0.02" in summary_text
@@ -301,6 +303,8 @@ def test_reload_config_rebuilds_runtime_components_when_changed() -> None:
             "vwap_reversion": {"enabled": False, "vwap_deviation_pct": 0.3},
             "rsi_momentum": {"enabled": False, "rsi_oversold": 25, "rsi_overbought": 75, "rsi_neutral_low": 45, "rsi_neutral_high": 55},
             "bollinger_fade": {"enabled": False, "bb_period": 20, "bb_std": 2.0, "rsi_threshold_low": 35, "rsi_threshold_high": 65},
+            "vpoc_bounce": {"enabled": False},
+            "macd_divergence": {"enabled": False},
         },
         "risk": {
             "position_size_pct": 0.005,
@@ -339,6 +343,8 @@ def test_reload_config_rebuilds_runtime_components_when_changed() -> None:
     trader.paper_executor = None
     trader.stock_feed = MagicMock()
     trader.crypto_feed = MagicMock()
+    trader.telegram = MagicMock()
+    trader.config_updater = MagicMock()
 
     with patch("main.load_config", return_value=new_config), patch("main.dashboard_init") as mock_dashboard:
         AutoTrader.reload_config(trader)

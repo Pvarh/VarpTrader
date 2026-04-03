@@ -184,26 +184,34 @@ def finalize_host_nightly(state_file: str, response_file: str) -> dict[str, obje
         rejected=rejected,
     )
     telegram.send_daily_report(report_md)
-    telegram.send_message(
-        _build_nightly_change_summary(
-            config_before,
-            report_data,
-            approved,
-            rejected,
-            auto_apply=False,  # Never auto-apply; overseer handles config
-            min_trades=None if report_data.get("total_trades", 0) >= min_trades else min_trades,
-        ),
-        parse_mode="",
-    )
 
-    db.insert_analysis_run(
+    db_run_id = db.insert_analysis_run(
         AnalysisRun(
             trades_analyzed=report_data.get("total_trades", 0),
             report_markdown=report_md,
             config_changes_json=json.dumps(approved) if approved else None,
-            approved=0,  # Recommendations only; overseer applies
+            approved=0,  # Recommendations only
         )
     )
+
+    summary_text = _build_nightly_change_summary(
+        config_before,
+        report_data,
+        approved,
+        rejected,
+        auto_apply=False,
+        min_trades=None if report_data.get("total_trades", 0) >= min_trades else min_trades,
+    )
+    if approved:
+        telegram.send_message_with_buttons(
+            text=summary_text,
+            buttons=[[
+                {"text": "Approve", "callback_data": f"approve:{db_run_id}"},
+                {"text": "Reject", "callback_data": f"reject:{db_run_id}"},
+            ]],
+        )
+    else:
+        telegram.send_message(summary_text, parse_mode="")
     logger.info(
         "host_nightly_analysis_complete | run_id={} approved={} rejected={}",
         run_id,

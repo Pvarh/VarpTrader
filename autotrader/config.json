@@ -89,7 +89,9 @@
     "atr_period": 14,
     "atr_multiplier": 1.5,
     "max_positions": 10,
-    "max_daily_trades": 20
+    "max_daily_trades": 20,
+    "max_hold_hours_crypto": 72,
+    "max_hold_hours_stock": 120
   },
   "whale": {
     "enabled": true,

@@ -26,10 +26,10 @@ class ConfigUpdater:
 
     # Default bounds used when the config file does not contain a "bounds" key.
     _DEFAULT_BOUNDS: dict[str, dict[str, float]] = {
-        "stop_loss_pct": {"min": 0.005, "max": 0.05},
-        "position_size_pct": {"min": 0.005, "max": 0.03},
-        "rsi_oversold": {"min": 20, "max": 40},
-        "rsi_overbought": {"min": 60, "max": 80},
+        "stop_loss_pct": {"min": 0.010, "max": 0.030},
+        "position_size_pct": {"min": 0.002, "max": 0.01},
+        "rsi_oversold": {"min": 20, "max": 35},
+        "rsi_overbought": {"min": 65, "max": 80},
     }
 
     # Maps parameter names to their nested location inside config.json.

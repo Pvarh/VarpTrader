@@ -52,10 +52,10 @@ def sample_config(tmp_path):
             "orb_min_win_rate": 0.56,
         },
         "bounds": {
-            "stop_loss_pct": {"min": 0.005, "max": 0.05},
-            "position_size_pct": {"min": 0.005, "max": 0.03},
-            "rsi_oversold": {"min": 20, "max": 40},
-            "rsi_overbought": {"min": 60, "max": 80},
+            "stop_loss_pct": {"min": 0.010, "max": 0.030},
+            "position_size_pct": {"min": 0.002, "max": 0.01},
+            "rsi_oversold": {"min": 20, "max": 35},
+            "rsi_overbought": {"min": 65, "max": 80},
         },
         "dashboard": {"host": "0.0.0.0", "port": 8000},
     }

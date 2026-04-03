@@ -40,7 +40,7 @@
       "volume_confirmation": true
     },
     "vwap_reversion": {
-      "enabled": true,
+      "enabled": false,
       "atr_band_multiplier": 1.5,
       "atr_period": 14,
       "volume_confirmation_mult": 1.2,

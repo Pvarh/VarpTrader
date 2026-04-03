@@ -1184,6 +1184,11 @@ class AutoTrader:
         )
         return multiplier
 
+    # Strategies that are allowed to go long in ranging markets.
+    # Mean-reversion (vpoc_bounce) and divergence (macd_divergence) strategies
+    # expect price to bounce/reverse — they need ranging conditions, not trends.
+    _RANGING_LONG_ALLOWED: set[str] = {"vpoc_bounce", "macd_divergence"}
+
     @staticmethod
     def _regime_allows(
         strategy_name: str,
@@ -1193,7 +1198,9 @@ class AutoTrader:
         """Check whether *regime* permits *direction* for *strategy_name*.
 
         Rules:
-        - Longs are ONLY allowed in trending_up regime (not ranging)
+        - Longs are ONLY allowed in trending_up regime, EXCEPT for
+          reversal/mean-reversion strategies (vpoc_bounce, macd_divergence)
+          which are also allowed in ranging markets
         - rsi_momentum  shorts only in trending_down or ranging
         - bollinger_fade fires freely in ranging, but in trends it only
           takes pullbacks in the direction of the trend
@@ -1203,9 +1210,13 @@ class AutoTrader:
         if direction is None:
             return True
 
-        # Global long gate: only allow longs in confirmed uptrend
+        # Global long gate: only allow longs in confirmed uptrend,
+        # except reversal strategies which also work in ranging markets
         if direction == SignalDirection.LONG and regime != "trending_up":
-            return False
+            if strategy_name in AutoTrader._RANGING_LONG_ALLOWED and regime == "ranging":
+                pass  # allowed
+            else:
+                return False
 
         if strategy_name == "rsi_momentum":
             if direction == SignalDirection.SHORT:

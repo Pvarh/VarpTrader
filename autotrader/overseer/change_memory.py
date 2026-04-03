@@ -285,6 +285,7 @@ def summarize_change_log(entries: list[dict[str, Any]]) -> str:
 
     applied = [entry for entry in entries if entry.get("type", "applied") == "applied"]
     blocked = [entry for entry in entries if entry.get("type") == "blocked"]
+    owner_overrides = [entry for entry in entries if entry.get("type") == "owner_override"]
     improved = [entry for entry in applied if entry.get("outcome") == "improved"]
     degraded = [entry for entry in applied if entry.get("outcome") == "degraded"]
     neutral = [entry for entry in applied if entry.get("outcome") == "neutral"]
@@ -293,12 +294,20 @@ def summarize_change_log(entries: list[dict[str, Any]]) -> str:
     lines = [
         f"  applied_changes={len(applied)}",
         f"  blocked_attempts={len(blocked)}",
+        f"  owner_overrides={len(owner_overrides)}",
         f"  improved={len(improved)}",
         f"  degraded={len(degraded)}",
         f"  neutral={len(neutral)}",
         f"  insufficient_data={len(insufficient)}",
         f"  pending_review={len(pending)}",
     ]
+
+    if owner_overrides:
+        lines.append("  OWNER OVERRIDES (MUST RESPECT — do NOT reverse these):")
+        for entry in owner_overrides[-5:]:
+            param = entry.get("parameter", "?")
+            reason = (entry.get("reason") or "no reason")[:150]
+            lines.append(f"    {param} = {entry.get('new_value')} on {entry.get('date')}: {reason}")
 
     if blocked:
         blocked_counts: dict[str, int] = {}
@@ -536,17 +545,55 @@ def summarize_strategy_log(entries: list[dict[str, Any]]) -> str:
         if entry.get("action") == "enabled"
     ]
 
+    # Collect active owner overrides (most recent override per strategy)
+    owner_overrides = _active_owner_overrides(entries)
+
     lines = [
         f"  total_strategy_events={len(entries)}",
         f"  currently_disabled_by_memory={len(disabled)}",
         f"  currently_enabled_after_memory={len(reenabled)}",
     ]
+
+    if owner_overrides:
+        lines.append("")
+        lines.append("  OWNER OVERRIDES (MUST RESPECT — do NOT reverse these):")
+        for strategy, entry in sorted(owner_overrides.items()):
+            reason = entry.get("reason") or "no reason recorded"
+            lines.append(f"    {strategy} -> {entry.get('action')} on {entry.get('date')}")
+            lines.append(f"      reason: {reason[:200]}")
+        lines.append("")
+
     for entry in sorted(disabled, key=lambda item: item.get("timestamp", ""))[-5:]:
         reason = entry.get("reason") or "no reason recorded"
         lines.append(
             f"  disabled {entry.get('strategy')} on {entry.get('date')} because {reason}"
         )
     return "\n".join(lines)
+
+
+def _active_owner_overrides(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Return the most recent owner_override per strategy that hasn't been superseded.
+
+    An owner override is "active" if no later non-override entry for the same
+    strategy contradicts it (i.e., the override is the latest action).
+    """
+    overrides: dict[str, dict[str, Any]] = {}
+    latest_by_strategy: dict[str, dict[str, Any]] = {}
+    for entry in sorted(entries, key=lambda item: item.get("timestamp", "")):
+        strategy = entry.get("strategy")
+        if not isinstance(strategy, str) or not strategy:
+            continue
+        latest_by_strategy[strategy] = entry
+        if entry.get("overseer_run_id") == "manual_owner_override":
+            overrides[strategy] = entry
+
+    # Only keep overrides that are still the latest entry for that strategy
+    active: dict[str, dict[str, Any]] = {}
+    for strategy, override in overrides.items():
+        latest = latest_by_strategy.get(strategy)
+        if latest and latest.get("overseer_run_id") == "manual_owner_override":
+            active[strategy] = override
+    return active
 
 
 def reconcile_run_memory(

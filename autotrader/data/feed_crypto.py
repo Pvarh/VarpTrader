@@ -59,6 +59,14 @@ class CryptoFeed:
         self._exchange_id: str = exchange_id
         self._ws: Any = None   # BinanceWebSocket, set by start_stream()
 
+        # Futures exchange for funding rate data (public, no auth needed)
+        self._futures_exchange: ccxt.Exchange | None = None
+        futures_class = getattr(ccxt, f"{exchange_id}usdm", None)
+        if futures_class is not None:
+            self._futures_exchange = futures_class({"enableRateLimit": True})
+
+        self._funding_cache: dict[str, tuple[float, float]] = {}
+
         logger.info(
             "crypto_feed_initialised | exchange={exchange} authenticated={authenticated}",
             exchange=exchange_id,
@@ -278,3 +286,46 @@ class CryptoFeed:
         except Exception:
             logger.exception("order_book_error | symbol={symbol} limit={limit}", symbol=symbol, limit=limit)
             return {}
+
+    # ------------------------------------------------------------------
+    # Funding rate
+    # ------------------------------------------------------------------
+    def get_funding_rate(self, symbol: str) -> float | None:
+        """Fetch the current perpetual futures funding rate for *symbol*.
+
+        Rates are cached for 4 hours (Binance updates every 8h).
+        Returns the rate as a decimal (e.g. 0.0001 = 0.01%), or ``None``
+        on error or if the exchange does not support funding rates.
+        """
+        import time as _time
+
+        if self._futures_exchange is None:
+            return None
+
+        CACHE_TTL = 4 * 3600  # 4 hours
+
+        cached = self._funding_cache.get(symbol)
+        if cached is not None:
+            rate, ts = cached
+            if _time.time() - ts < CACHE_TTL:
+                return rate
+
+        # Translate spot symbol to perp if needed (BTC/USDT -> BTC/USDT:USDT)
+        perp_symbol = symbol if ":" in symbol else f"{symbol}:USDT"
+
+        try:
+            data = self._futures_exchange.fetch_funding_rate(perp_symbol)
+            rate = float(data.get("fundingRate", 0.0))
+            self._funding_cache[symbol] = (rate, _time.time())
+            logger.info(
+                "funding_rate_fetched | symbol={symbol} rate={rate}",
+                symbol=symbol,
+                rate=rate,
+            )
+            return rate
+        except Exception:
+            logger.warning(
+                "funding_rate_error | symbol={symbol}",
+                symbol=symbol,
+            )
+            return None

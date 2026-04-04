@@ -15,6 +15,7 @@ from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
 from signals.vwap_reversion import VWAPReversionSignal
 from signals.macd_divergence import MACDDivergenceSignal
+from signals.funding_rate import FundingRateSignal
 
 
 # ---------------------------------------------------------------------------
@@ -1307,3 +1308,93 @@ class TestMACDDivergenceSwingBias:
                 symbol="AAPL", current_price=100.0, candles=candles, market="stock",
             )
             assert not result.triggered
+
+
+# ===========================================================================
+# Funding Rate Fade
+# ===========================================================================
+
+class TestFundingRate:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "threshold": 0.0001,
+            "extreme_threshold": 0.0005,
+            "stop_loss_pct": 0.015,
+        }
+
+    @pytest.fixture(autouse=True)
+    def mock_swing_advisor(self):
+        with patch(
+            "signals.funding_rate.FundingRateSignal.check_swing_bias",
+            return_value=True,
+        ):
+            yield
+
+    def test_positive_funding_triggers_short(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.0003, 50000.0)
+        assert result.triggered
+        assert result.direction == SignalDirection.SHORT
+        assert result.stop_loss > result.entry_price
+        assert result.take_profit < result.entry_price
+
+    def test_negative_funding_triggers_long(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", -0.0003, 50000.0)
+        assert result.triggered
+        assert result.direction == SignalDirection.LONG
+        assert result.stop_loss < result.entry_price
+        assert result.take_profit > result.entry_price
+
+    def test_neutral_funding_no_signal(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.00005, 50000.0)
+        assert not result.triggered
+
+    def test_disabled_no_signal(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.001, 50000.0)
+        assert not result.triggered
+
+    def test_extreme_confidence(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.001, 50000.0)
+        assert result.confidence == 0.70
+
+    def test_moderate_confidence(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.0002, 50000.0)
+        assert 0.50 < result.confidence < 0.70
+
+    def test_strategy_name(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        assert sig.name == "funding_rate"
+
+    def test_generic_evaluate_returns_no_signal(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate("BTC/USDT", [], 50000.0, "crypto")
+        assert not result.triggered
+
+
+class TestFundingRateSwingBias:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "threshold": 0.0001,
+            "extreme_threshold": 0.0005,
+            "stop_loss_pct": 0.015,
+        }
+
+    def test_blocked_by_swing_bias(self, config: dict) -> None:
+        with patch(
+            "signals.funding_rate.FundingRateSignal.check_swing_bias",
+            return_value=False,
+        ):
+            sig = FundingRateSignal(config)
+            result = sig.evaluate_from_funding("BTC/USDT", 0.001, 50000.0)
+            assert not result.triggered
+            assert "swing bias" in result.reason.lower()

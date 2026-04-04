@@ -54,6 +54,7 @@ from signals.vpoc_bounce import VPOCBounceSignal
 from signals.macd_divergence import MACDDivergenceSignal
 from signals.rsi_momentum import RSIMomentumSignal
 from signals.bollinger_fade import BollingerFadeSignal
+from signals.funding_rate import FundingRateSignal
 from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
 from signals.regime_detector import RegimeDetector
@@ -399,6 +400,7 @@ class AutoTrader:
             BollingerFadeSignal(strat_cfg["bollinger_fade"]),
             VPOCBounceSignal(strat_cfg["vpoc_bounce"]),
             MACDDivergenceSignal(strat_cfg["macd_divergence"]),
+            FundingRateSignal(strat_cfg.get("funding_rate", {"enabled": False})),
         ]
 
     def _refresh_runtime_components(self) -> None:
@@ -991,6 +993,31 @@ class AutoTrader:
                     )
                     continue
 
+                # -- Funding rate crowd filter --------------------------------
+                fr_filter = self.config.get("funding_rate_filter", {})
+                if fr_filter.get("enabled", False) and result.direction:
+                    fr = self.crypto_feed.get_funding_rate(symbol)
+                    block_threshold = fr_filter.get("block_threshold", 0.0003)
+                    if fr is not None:
+                        if (
+                            result.direction == SignalDirection.LONG
+                            and fr > block_threshold
+                        ):
+                            logger.info(
+                                "funding_blocked_long | symbol={} strategy={} rate={:.6f}",
+                                symbol, sig.name, fr,
+                            )
+                            continue
+                        if (
+                            result.direction == SignalDirection.SHORT
+                            and fr < -block_threshold
+                        ):
+                            logger.info(
+                                "funding_blocked_short | symbol={} strategy={} rate={:.6f}",
+                                symbol, sig.name, fr,
+                            )
+                            continue
+
                 self._process_signal(
                     result, symbol, "crypto", account_value,
                     current_positions, 0,
@@ -1006,6 +1033,7 @@ class AutoTrader:
     # ====================================================================
     # Strategies that are excluded from crypto markets
     _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle"}
+    _CRYPTO_ONLY_STRATEGIES: set[str] = {"funding_rate"}
 
     # Correlation groups: symbols that move together. Max 2 same-direction
     # positions per group to limit overlapping exposure.
@@ -1021,6 +1049,8 @@ class AutoTrader:
     def _strategy_allowed_for_market(strategy_name: str, market: str) -> bool:
         """Return False if *strategy_name* is excluded from *market*."""
         if market == "crypto" and strategy_name in AutoTrader._STOCK_ONLY_STRATEGIES:
+            return False
+        if market == "stock" and strategy_name in AutoTrader._CRYPTO_ONLY_STRATEGIES:
             return False
         return True
 
@@ -1187,7 +1217,7 @@ class AutoTrader:
     # Strategies that are allowed to go long in ranging markets.
     # Mean-reversion (vpoc_bounce) and divergence (macd_divergence) strategies
     # expect price to bounce/reverse — they need ranging conditions, not trends.
-    _RANGING_LONG_ALLOWED: set[str] = {"vpoc_bounce", "macd_divergence"}
+    _RANGING_LONG_ALLOWED: set[str] = {"vpoc_bounce", "macd_divergence", "funding_rate"}
 
     @staticmethod
     def _regime_allows(
@@ -1423,6 +1453,15 @@ class AutoTrader:
             return sig.evaluate_from_macd(
                 symbol=symbol, current_price=current_price,
                 candles=candles, market=market,
+            )
+
+        elif isinstance(sig, FundingRateSignal):
+            funding_rate = self.crypto_feed.get_funding_rate(symbol)
+            if funding_rate is None:
+                return SignalResult(triggered=False, strategy_name=sig.name)
+            return sig.evaluate_from_funding(
+                symbol=symbol, funding_rate=funding_rate,
+                current_price=current_price,
             )
 
         return sig.evaluate(symbol, candles, current_price, market)

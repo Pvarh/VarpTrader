@@ -751,6 +751,8 @@ class AutoTrader:
         for sig in self.signals:
             if not sig.is_enabled():
                 continue
+            if not self._strategy_allowed_for_market(sig.name, "stock"):
+                continue
             try:
                 result = self._run_signal(
                     sig, symbol, candles_5m, current_price, "stock",
@@ -1044,7 +1046,7 @@ class AutoTrader:
     # Signal evaluation helpers
     # ====================================================================
     # Strategies that are excluded from crypto markets
-    _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle"}
+    _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle", "rsi_momentum"}
     _CRYPTO_ONLY_STRATEGIES: set[str] = {"funding_rate"}
 
     # Correlation groups: symbols that move together. Max 2 same-direction

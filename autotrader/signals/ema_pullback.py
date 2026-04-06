@@ -58,6 +58,7 @@ class EMAPullbackSignal(BaseSignal):
         ema_fast: float,
         ema_slow: float,
         rsi: float,
+        atr: float = 0.0,
     ) -> SignalResult:
         """Evaluate an EMA pullback entry.
 
@@ -79,6 +80,7 @@ class EMAPullbackSignal(BaseSignal):
         rsi_max_long = self.config.get("rsi_max_long", 55)
         rsi_min_short = self.config.get("rsi_min_short", 45)
         stop_loss_pct = self.config.get("stop_loss_pct", 0.015)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
 
         direction: SignalDirection | None = None
         reason = ""
@@ -131,7 +133,7 @@ class EMAPullbackSignal(BaseSignal):
 
         # ---- Price levels ----------------------------------------------
         entry_price = current_price
-        stop_distance = entry_price * stop_loss_pct
+        stop_distance = atr * atr_stop_mult if atr > 0 else entry_price * stop_loss_pct
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance

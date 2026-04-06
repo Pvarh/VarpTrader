@@ -38,6 +38,7 @@ class MACDDivergenceSignal(BaseSignal):
         current_price: float,
         candles: list[OHLCV],
         market: str,
+        atr: float = 0.0,
     ) -> SignalResult:
         """Evaluate MACD divergence with cross confirmation."""
         no_signal = SignalResult(triggered=False, strategy_name=self.name)
@@ -51,6 +52,7 @@ class MACDDivergenceSignal(BaseSignal):
         lookback = self.config.get("divergence_lookback", 30)
         min_dist = self.config.get("min_swing_distance", 5)
         sl_pct = self.config.get("stop_loss_pct", 0.015)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
         rr_ratio = self.config.get("rr_ratio", 2.0)
 
         min_bars = slow + sig_period + lookback
@@ -116,7 +118,7 @@ class MACDDivergenceSignal(BaseSignal):
 
         # Price levels
         entry_price = current_price
-        sl_distance = entry_price * sl_pct
+        sl_distance = atr * atr_stop_mult if atr > 0 else entry_price * sl_pct
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - sl_distance

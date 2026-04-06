@@ -71,6 +71,7 @@ class EMACrossSignal(BaseSignal):
         curr_slow_ema: float,
         rsi: float,
         current_price: float,
+        atr: float = 0.0,
     ) -> SignalResult:
         """Evaluate an EMA crossover signal.
 
@@ -99,6 +100,7 @@ class EMACrossSignal(BaseSignal):
         fast_ema: int = self.config.get("fast_ema", 50)
         slow_ema: int = self.config.get("slow_ema", 200)
         stop_loss_pct: float = self.config.get("stop_loss_pct", 0.015)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
 
         # --- Cross detection -------------------------------------------------
         golden_cross = prev_fast_ema < prev_slow_ema and curr_fast_ema > curr_slow_ema
@@ -157,7 +159,7 @@ class EMACrossSignal(BaseSignal):
 
         # --- Price levels ----------------------------------------------------
         entry_price = current_price
-        stop_distance = entry_price * stop_loss_pct
+        stop_distance = atr * atr_stop_mult if atr > 0 else entry_price * stop_loss_pct
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance

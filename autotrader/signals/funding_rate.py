@@ -35,6 +35,7 @@ class FundingRateSignal(BaseSignal):
         symbol: str,
         funding_rate: float,
         current_price: float,
+        atr: float = 0.0,
     ) -> SignalResult:
         """Evaluate a funding rate fade signal.
 
@@ -53,6 +54,7 @@ class FundingRateSignal(BaseSignal):
         threshold: float = self.config.get("threshold", 0.0001)
         extreme: float = self.config.get("extreme_threshold", 0.0005)
         stop_pct: float = self.config.get("stop_loss_pct", 0.015)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
 
         abs_rate = abs(funding_rate)
         if abs_rate < threshold:
@@ -80,7 +82,7 @@ class FundingRateSignal(BaseSignal):
             confidence = 0.50 + 0.20 * (abs_rate - threshold) / max(extreme - threshold, 1e-9)
 
         entry_price = current_price
-        stop_distance = entry_price * stop_pct
+        stop_distance = atr * atr_stop_mult if atr > 0 else entry_price * stop_pct
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
             take_profit = entry_price + stop_distance * 2.0

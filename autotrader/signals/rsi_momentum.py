@@ -72,6 +72,7 @@ class RSIMomentumSignal(BaseSignal):
         rsi_5m: float,
         rsi_1h: float,
         current_price: float,
+        atr: float = 0.0,
     ) -> SignalResult:
         """Evaluate a multi-timeframe RSI signal.
 
@@ -99,6 +100,7 @@ class RSIMomentumSignal(BaseSignal):
         rsi_neutral_low: float = self.config.get("rsi_neutral_low", 40.0)
         rsi_neutral_high: float = self.config.get("rsi_neutral_high", 60.0)
         stop_loss_pct: float = self.config.get("stop_loss_pct", 0.015)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
 
         # --- Guard: 1-hour RSI in neutral zone -------------------------------
         if rsi_neutral_low <= rsi_1h <= rsi_neutral_high:
@@ -163,7 +165,7 @@ class RSIMomentumSignal(BaseSignal):
 
         # --- Price levels ----------------------------------------------------
         entry_price = current_price
-        stop_distance = entry_price * stop_loss_pct
+        stop_distance = atr * atr_stop_mult if atr > 0 else entry_price * stop_loss_pct
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance

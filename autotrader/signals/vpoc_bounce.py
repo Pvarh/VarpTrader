@@ -37,6 +37,7 @@ class VPOCBounceSignal(BaseSignal):
         session_candles: list[OHLCV],
         recent_candles: list[OHLCV],
         market: str,
+        atr: float = 0.0,
     ) -> SignalResult:
         """Evaluate VPOC bounce from session volume profile."""
         no_signal = SignalResult(triggered=False, strategy_name=self.name)
@@ -49,6 +50,7 @@ class VPOCBounceSignal(BaseSignal):
         bounce_candles = self.config.get("bounce_candles", 2)
         min_poc_vol = self.config.get("min_poc_volume_pct", 0.15)
         sl_pct = self.config.get("stop_loss_pct", 0.01)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
         rr_ratio = self.config.get("rr_ratio", 2.0)
 
         if not session_candles or len(recent_candles) < bounce_candles:
@@ -118,7 +120,7 @@ class VPOCBounceSignal(BaseSignal):
 
         # Price levels
         entry_price = current_price
-        sl_distance = entry_price * sl_pct
+        sl_distance = atr * atr_stop_mult if atr > 0 else entry_price * sl_pct
 
         if direction == SignalDirection.LONG:
             stop_loss = poc_price - sl_distance

@@ -312,7 +312,7 @@ class AutoTrader:
         analysis_cfg = self.config.get("analysis", {})
         self.llm_advisor = LLMAdvisor(
             api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-            model=analysis_cfg.get("model", "claude-sonnet-4-6"),
+            model=analysis_cfg.get("model", "claude-opus-4-6"),
         )
         self.config_updater = ConfigUpdater(str(CONFIG_PATH))
         self.report_builder = ReportBuilder()
@@ -359,6 +359,8 @@ class AutoTrader:
         # -- State -----------------------------------------------------------
         self._daily_trade_count = 0
         self._in_flight_symbols: set[str] = set()  # Track symbols being processed in current scan cycle
+        # key: f"{symbol}:{strategy_name}" -> (result, created_at, trigger_candle_ts)
+        self._pending_signals: dict[str, tuple] = {}
         self._peak_equity: float = 0.0
         self._drawdown_halted: bool = False
         self._strategy_cooldown_until: dict[str, float] = {}  # strategy -> timestamp
@@ -741,6 +743,11 @@ class AutoTrader:
             logger.info("whale_sell_flag_active | symbol={}", symbol)
             whale_flag = 1
 
+        # -- Check any pending confirmation-candle signals --------------------
+        self._check_pending_signals(
+            symbol, candles_5m, account_value, current_positions, "stock", whale_flag,
+        )
+
         for sig in self.signals:
             if not sig.is_enabled():
                 continue
@@ -808,9 +815,9 @@ class AutoTrader:
                     )
                     continue
 
-                self._process_signal(
+                self._maybe_defer_signal(
                     result, symbol, "stock", account_value,
-                    current_positions, whale_flag,
+                    current_positions, whale_flag, candles_5m,
                 )
             except Exception:
                 logger.exception(
@@ -923,6 +930,11 @@ class AutoTrader:
             )
             return
 
+        # -- Check any pending confirmation-candle signals --------------------
+        self._check_pending_signals(
+            symbol, candles_5m, account_value, current_positions, "crypto", 0,
+        )
+
         for sig in self.signals:
             if not sig.is_enabled():
                 continue
@@ -1018,9 +1030,9 @@ class AutoTrader:
                             )
                             continue
 
-                self._process_signal(
+                self._maybe_defer_signal(
                     result, symbol, "crypto", account_value,
-                    current_positions, 0,
+                    current_positions, 0, candles_5m,
                 )
             except Exception:
                 logger.exception(
@@ -1053,6 +1065,84 @@ class AutoTrader:
         if market == "stock" and strategy_name in AutoTrader._CRYPTO_ONLY_STRATEGIES:
             return False
         return True
+
+    def _confirmation_candle_enabled(self) -> bool:
+        return bool(self.config.get("risk", {}).get("confirmation_candle", False))
+
+    def _check_pending_signals(
+        self,
+        symbol: str,
+        candles: list,
+        account_value: float,
+        current_positions: int,
+        market: str,
+        whale_flag: int = 0,
+    ) -> None:
+        """Execute pending signals confirmed by the latest closed candle."""
+        if not candles:
+            return
+        now = datetime.now(timezone.utc)
+        expire_secs = 900  # 15 min — discard if no new candle in time
+        current_candle = candles[-1]
+        to_delete = []
+        for key, (result, created_at, trigger_candle_ts) in list(self._pending_signals.items()):
+            if not key.startswith(f"{symbol}:"):
+                continue
+            age = (now - created_at).total_seconds()
+            if age > expire_secs:
+                logger.info(
+                    "pending_signal_expired | symbol={} strategy={} age={:.0f}s",
+                    symbol, result.strategy_name, age,
+                )
+                to_delete.append(key)
+                continue
+            if current_candle.timestamp <= trigger_candle_ts:
+                continue  # same candle, wait for next
+            confirmed = (
+                result.direction == SignalDirection.LONG and current_candle.close > current_candle.open
+            ) or (
+                result.direction == SignalDirection.SHORT and current_candle.close < current_candle.open
+            )
+            to_delete.append(key)
+            if confirmed:
+                logger.info(
+                    "pending_signal_confirmed | symbol={} strategy={} direction={}",
+                    symbol, result.strategy_name,
+                    result.direction.value if result.direction else "none",
+                )
+                self._process_signal(result, symbol, market, account_value, current_positions, whale_flag)
+            else:
+                logger.info(
+                    "pending_signal_not_confirmed | symbol={} strategy={} -- discarding",
+                    symbol, result.strategy_name,
+                )
+        for key in to_delete:
+            self._pending_signals.pop(key, None)
+
+    def _maybe_defer_signal(
+        self,
+        result: "SignalResult",
+        symbol: str,
+        market: str,
+        account_value: float,
+        current_positions: int,
+        whale_flag: int,
+        candles: list,
+    ) -> None:
+        """Process signal immediately, or store pending if confirmation_candle is on."""
+        if not self._confirmation_candle_enabled():
+            self._process_signal(result, symbol, market, account_value, current_positions, whale_flag)
+            return
+        key = f"{symbol}:{result.strategy_name}"
+        if key in self._pending_signals:
+            return  # already waiting
+        trigger_candle_ts = candles[-1].timestamp if candles else datetime.now(timezone.utc)
+        self._pending_signals[key] = (result, datetime.now(timezone.utc), trigger_candle_ts)
+        logger.info(
+            "pending_signal_stored | symbol={} strategy={} direction={} -- awaiting confirmation candle",
+            symbol, result.strategy_name,
+            result.direction.value if result.direction else "none",
+        )
 
     def _correlation_allows(self, symbol: str, direction: str) -> bool:
         """Check if opening this position would exceed correlation limits."""
@@ -1283,6 +1373,11 @@ class AutoTrader:
         candles_1h: list | None = None,
     ) -> SignalResult:
         """Run a specific signal's evaluation method."""
+        # Compute ATR once for all signal types
+        atr_period = self.config.get("risk", {}).get("atr_period", 14)
+        atr_series = Indicators.atr(candles, atr_period)
+        current_atr = atr_series[-1] if atr_series else 0.0
+
         if isinstance(sig, FirstCandleSignal) and first_candle:
             now = datetime.now(timezone.utc)
             market_open = now.replace(hour=13, minute=30, second=0, microsecond=0)
@@ -1314,7 +1409,7 @@ class AutoTrader:
 
             return sig.evaluate_from_rsi(
                 symbol=symbol, rsi_5m=rsi_5m, rsi_1h=rsi_1h,
-                current_price=current_price,
+                current_price=current_price, atr=current_atr,
             )
         elif isinstance(sig, VWAPReversionSignal):
             vwap_series = Indicators.vwap(candles)
@@ -1398,7 +1493,7 @@ class AutoTrader:
                 prev_slow_ema=prev_slow,
                 curr_fast_ema=curr_fast,
                 curr_slow_ema=curr_slow,
-                rsi=rsi, current_price=current_price,
+                rsi=rsi, current_price=current_price, atr=current_atr,
             )
         elif isinstance(sig, EMAPullbackSignal):
             ema_candles = (
@@ -1438,7 +1533,7 @@ class AutoTrader:
                 current_price=current_price,
                 ema_fast=ema_fast,
                 ema_slow=ema_slow,
-                rsi=rsi,
+                rsi=rsi, atr=current_atr,
             )
 
         elif isinstance(sig, VPOCBounceSignal):
@@ -1446,13 +1541,13 @@ class AutoTrader:
             return sig.evaluate_from_profile(
                 symbol=symbol, current_price=current_price,
                 session_candles=candles, recent_candles=candles[-bounce_n:],
-                market=market,
+                market=market, atr=current_atr,
             )
 
         elif isinstance(sig, MACDDivergenceSignal):
             return sig.evaluate_from_macd(
                 symbol=symbol, current_price=current_price,
-                candles=candles, market=market,
+                candles=candles, market=market, atr=current_atr,
             )
 
         elif isinstance(sig, FundingRateSignal):
@@ -1461,7 +1556,7 @@ class AutoTrader:
                 return SignalResult(triggered=False, strategy_name=sig.name)
             return sig.evaluate_from_funding(
                 symbol=symbol, funding_rate=funding_rate,
-                current_price=current_price,
+                current_price=current_price, atr=current_atr,
             )
 
         return sig.evaluate(symbol, candles, current_price, market)
@@ -2655,10 +2750,14 @@ def run_live(args) -> None:
         id="daily_reset",
     )
 
-    # -- Nightly analysis --------------------------------------------------
+    # -- Analysis every N days (default: 3) using Opus -----------------------
+    analysis_interval_days = trader.config.get("analysis", {}).get(
+        "analysis_interval_days", 3
+    )
     scheduler.add_job(
         trader.run_nightly_analysis,
         CronTrigger(
+            day=f"*/{analysis_interval_days}",
             hour=nightly_hour,
             minute=nightly_minute,
             timezone=tz,

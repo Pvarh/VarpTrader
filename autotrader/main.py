@@ -763,7 +763,8 @@ class AutoTrader:
                 self._record_signal_activity()
 
                 # -- Fast VWAP pre-check ----------------------------------------
-                # Block longs below 1h VWAP, shorts above 1h VWAP
+                # Block longs well below 1h VWAP, shorts well above 1h VWAP
+                # 0.5% buffer prevents filtering in choppy/ranging conditions
                 if (
                     candles_1h
                     and len(candles_1h) >= 10
@@ -773,13 +774,14 @@ class AutoTrader:
                     vwap_series = Indicators.vwap(candles_1h)
                     if vwap_series:
                         vwap_1h = vwap_series[-1]
-                        if result.direction == SignalDirection.LONG and current_price < vwap_1h:
+                        vwap_buffer = vwap_1h * 0.005
+                        if result.direction == SignalDirection.LONG and current_price < vwap_1h - vwap_buffer:
                             logger.info(
                                 "vwap_blocked_long | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
                             )
                             continue
-                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h:
+                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h + vwap_buffer:
                             logger.info(
                                 "vwap_blocked_short | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
@@ -952,7 +954,8 @@ class AutoTrader:
                 self._record_signal_activity()
 
                 # -- Fast VWAP pre-check ----------------------------------------
-                # Block longs below 1h VWAP, shorts above 1h VWAP
+                # Block longs well below 1h VWAP, shorts well above 1h VWAP
+                # 0.5% buffer prevents filtering in choppy/ranging conditions
                 if (
                     candles_1h
                     and len(candles_1h) >= 10
@@ -962,13 +965,14 @@ class AutoTrader:
                     vwap_series = Indicators.vwap(candles_1h)
                     if vwap_series:
                         vwap_1h = vwap_series[-1]
-                        if result.direction == SignalDirection.LONG and current_price < vwap_1h:
+                        vwap_buffer = vwap_1h * 0.005
+                        if result.direction == SignalDirection.LONG and current_price < vwap_1h - vwap_buffer:
                             logger.info(
                                 "vwap_blocked_long | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
                             )
                             continue
-                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h:
+                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h + vwap_buffer:
                             logger.info(
                                 "vwap_blocked_short | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
@@ -1361,7 +1365,7 @@ class AutoTrader:
         ema_cross is excluded: it is trend-following and the crossover
         itself is a stronger directional signal than intraday VWAP.
         """
-        return strategy_name in {"first_candle", "ema_pullback"}
+        return strategy_name in {"first_candle"}
 
     def _run_signal(
         self,

@@ -200,7 +200,7 @@ def test_poll_telegram_commands_executes_manual_sell() -> None:
 
 def test_directional_vwap_filter_only_applies_to_trend_following_strategies() -> None:
     assert AutoTrader._uses_directional_vwap_filter("ema_cross") is False
-    assert AutoTrader._uses_directional_vwap_filter("ema_pullback") is True
+    assert AutoTrader._uses_directional_vwap_filter("ema_pullback") is False
     assert AutoTrader._uses_directional_vwap_filter("first_candle") is True
     assert AutoTrader._uses_directional_vwap_filter("rsi_momentum") is False
     assert AutoTrader._uses_directional_vwap_filter("bollinger_fade") is False
@@ -271,6 +271,7 @@ def test_stock_signal_ignores_session_bias_when_disabled() -> None:
     trader._last_signal_time = 0.0
     trader._starvation_alerted = True
     trader._starvation_overseer_triggered = True
+    trader._pending_signals = {}
     trader._run_signal = MagicMock(
         return_value=SignalResult(
             triggered=True,

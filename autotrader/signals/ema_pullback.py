@@ -81,6 +81,7 @@ class EMAPullbackSignal(BaseSignal):
         rsi_min_short = self.config.get("rsi_min_short", 45)
         stop_loss_pct = self.config.get("stop_loss_pct", 0.015)
         atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
+        rr_ratio: float = self.config.get("rr_ratio", 2.0)
 
         direction: SignalDirection | None = None
         reason = ""
@@ -137,10 +138,10 @@ class EMAPullbackSignal(BaseSignal):
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
-            take_profit = entry_price + (stop_distance * 2)
+            take_profit = entry_price + (stop_distance * rr_ratio)
         else:
             stop_loss = entry_price + stop_distance
-            take_profit = entry_price - (stop_distance * 2)
+            take_profit = entry_price - (stop_distance * rr_ratio)
 
         logger.info(
             "signal_triggered | signal={} symbol={} direction={} "

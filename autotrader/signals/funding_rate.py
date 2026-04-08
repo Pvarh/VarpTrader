@@ -55,6 +55,7 @@ class FundingRateSignal(BaseSignal):
         extreme: float = self.config.get("extreme_threshold", 0.0005)
         stop_pct: float = self.config.get("stop_loss_pct", 0.015)
         atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
+        rr_ratio: float = self.config.get("rr_ratio", 2.0)
 
         abs_rate = abs(funding_rate)
         if abs_rate < threshold:
@@ -85,10 +86,10 @@ class FundingRateSignal(BaseSignal):
         stop_distance = atr * atr_stop_mult if atr > 0 else entry_price * stop_pct
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
-            take_profit = entry_price + stop_distance * 2.0
+            take_profit = entry_price + stop_distance * rr_ratio
         else:
             stop_loss = entry_price + stop_distance
-            take_profit = entry_price - stop_distance * 2.0
+            take_profit = entry_price - stop_distance * rr_ratio
 
         reason = (
             f"Funding rate {funding_rate:.6f} "

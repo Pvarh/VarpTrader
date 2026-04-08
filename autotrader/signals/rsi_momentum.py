@@ -101,6 +101,7 @@ class RSIMomentumSignal(BaseSignal):
         rsi_neutral_high: float = self.config.get("rsi_neutral_high", 60.0)
         stop_loss_pct: float = self.config.get("stop_loss_pct", 0.015)
         atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
+        rr_ratio: float = self.config.get("rr_ratio", 2.0)
 
         # --- Guard: 1-hour RSI in neutral zone -------------------------------
         if rsi_neutral_low <= rsi_1h <= rsi_neutral_high:
@@ -169,10 +170,10 @@ class RSIMomentumSignal(BaseSignal):
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
-            take_profit = entry_price + (stop_distance * 2)
+            take_profit = entry_price + (stop_distance * rr_ratio)
         else:
             stop_loss = entry_price + stop_distance
-            take_profit = entry_price - (stop_distance * 2)
+            take_profit = entry_price - (stop_distance * rr_ratio)
 
         logger.info(
             "signal_triggered | signal={signal} symbol={symbol} "

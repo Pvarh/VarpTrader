@@ -101,6 +101,7 @@ class EMACrossSignal(BaseSignal):
         slow_ema: int = self.config.get("slow_ema", 200)
         stop_loss_pct: float = self.config.get("stop_loss_pct", 0.015)
         atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
+        rr_ratio: float = self.config.get("rr_ratio", 2.0)
 
         # --- Cross detection -------------------------------------------------
         golden_cross = prev_fast_ema < prev_slow_ema and curr_fast_ema > curr_slow_ema
@@ -163,10 +164,10 @@ class EMACrossSignal(BaseSignal):
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
-            take_profit = entry_price + (stop_distance * 2)
+            take_profit = entry_price + (stop_distance * rr_ratio)
         else:
             stop_loss = entry_price + stop_distance
-            take_profit = entry_price - (stop_distance * 2)
+            take_profit = entry_price - (stop_distance * rr_ratio)
 
         logger.info(
             "signal_triggered | signal={signal} symbol={symbol} "

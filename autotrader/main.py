@@ -365,6 +365,7 @@ class AutoTrader:
         self._drawdown_halted: bool = False
         self._strategy_cooldown_until: dict[str, float] = {}  # strategy -> timestamp
         self._strategy_cooldown_count: dict[str, int] = {}  # strategy -> cooldown trigger count
+        self._strategy_cooldown_last_trade_id: dict[str, int] = {}  # strategy -> trade id that last triggered cooldown
         self._running = True
         self._start_time = time.time()
         self._last_signal_time = time.time()
@@ -1229,10 +1230,17 @@ class AutoTrader:
             return True
 
         if all(t["outcome"] == "loss" for t in recent):
+            most_recent_id = recent[0].get("id", 0)
+            last_trigger_id = self._strategy_cooldown_last_trade_id.get(strategy, 0)
+            if most_recent_id == last_trigger_id:
+                # Same trades as last cooldown — no new losses since then, allow trading
+                return True
+
             self._strategy_cooldown_count[strategy] = (
                 self._strategy_cooldown_count.get(strategy, 0) + 1
             )
             count = self._strategy_cooldown_count[strategy]
+            self._strategy_cooldown_last_trade_id[strategy] = most_recent_id
 
             # Auto-disable after too many cooldown triggers
             if count >= STRATEGY_DISABLE_AFTER_COOLDOWNS:

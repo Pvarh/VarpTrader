@@ -1218,7 +1218,7 @@ class TestMACDDivergence:
 
     @pytest.fixture(autouse=True)
     def _no_swing_block(self):
-        with patch("signals.macd_divergence.MACDDivergenceSignal.check_swing_bias", return_value=False):
+        with patch("signals.macd_divergence.MACDDivergenceSignal.check_swing_bias", return_value=True):
             yield
 
     def _make_candles(self, closes: list[float]) -> list[OHLCV]:

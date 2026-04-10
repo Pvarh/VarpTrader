@@ -1493,6 +1493,10 @@ class AutoTrader:
                 if len(volumes) >= 20:
                     avg_vol = sum(volumes[-20:]) / 20
                     if volumes[-1] <= avg_vol:
+                        logger.info(
+                            "volume_confirmation_blocked | signal={} symbol={} vol={:.2f} avg_vol={:.2f}",
+                            sig.name, symbol, volumes[-1], avg_vol,
+                        )
                         return SignalResult(
                             triggered=False, strategy_name=sig.name,
                             reason="Volume below 20-period average",
@@ -1534,6 +1538,10 @@ class AutoTrader:
                 if len(volumes) >= 20:
                     avg_vol = sum(volumes[-20:]) / 20
                     if volumes[-1] <= avg_vol:
+                        logger.info(
+                            "volume_confirmation_blocked | signal={} symbol={} vol={:.2f} avg_vol={:.2f}",
+                            sig.name, symbol, volumes[-1], avg_vol,
+                        )
                         return SignalResult(
                             triggered=False, strategy_name=sig.name,
                             reason="Volume below 20-period average",

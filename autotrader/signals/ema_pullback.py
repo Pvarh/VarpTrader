@@ -114,6 +114,10 @@ class EMAPullbackSignal(BaseSignal):
                 )
 
         if direction is None:
+            logger.debug(
+                "no_pullback | symbol={} price={:.4f} ema_fast={:.4f} ema_slow={:.4f} rsi={:.1f}",
+                symbol, current_price, ema_fast, ema_slow, rsi,
+            )
             return SignalResult(
                 triggered=False,
                 strategy_name=self.name,

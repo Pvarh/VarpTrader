@@ -77,6 +77,11 @@
 ### Watchlist
 - Added `MSFT`, `GOOGL` to `watchlist.stocks`. Sampled at 0.5× size per above.
 
+### Per-combo cooldown (main.py `_combo_cooldown_allows`)
+- Consecutive-loss cooldown now keyed by `(symbol, strategy)` instead of strategy-wide. Prevents one symbol's losses from poisoning another's trade flow (e.g. crypto vwap_reversion losses had been blocking AAPL vwap_reversion).
+- 3 consecutive losses on a combo → 60-min pause for that combo only. Win in the window resets the trigger count.
+- Removed the "auto-disable whole strategy after 3 cooldowns" escalation and its `STRATEGY_DISABLE_AFTER_COOLDOWNS` constant. Long-horizon muting is the job of the per-combo gate at 15 trades — the cooldown is only a short-horizon circuit breaker.
+
 ---
 
 ## Pre-restart workflow (durable rule)

@@ -110,7 +110,6 @@ STRATEGY_COOLDOWN_MINUTES = int(os.getenv("STRATEGY_COOLDOWN_MINUTES", "60"))
 WINRATE_LOOKBACK = int(os.getenv("WINRATE_LOOKBACK", "10"))
 WINRATE_SIZE_MIN = float(os.getenv("WINRATE_SIZE_MIN", "0.5"))
 WINRATE_SIZE_MAX = float(os.getenv("WINRATE_SIZE_MAX", "1.5"))
-STRATEGY_DISABLE_AFTER_COOLDOWNS = int(os.getenv("STRATEGY_DISABLE_AFTER_COOLDOWNS", "3"))
 COMBO_DISABLE_MIN_TRADES = int(os.getenv("COMBO_DISABLE_MIN_TRADES", "15"))
 SIGNAL_RETRY_COOLDOWN_SECONDS = int(
     os.getenv("SIGNAL_RETRY_COOLDOWN_SECONDS", "900")
@@ -367,9 +366,12 @@ class AutoTrader:
         self._pending_signals: dict[str, tuple] = {}
         self._peak_equity: float = 0.0
         self._drawdown_halted: bool = False
-        self._strategy_cooldown_until: dict[str, float] = {}  # strategy -> timestamp
-        self._strategy_cooldown_count: dict[str, int] = {}  # strategy -> cooldown trigger count
-        self._strategy_cooldown_last_trade_id: dict[str, int] = {}  # strategy -> trade id that last triggered cooldown
+        # Cooldown state is keyed by (symbol, strategy) so losses on one combo
+        # don't poison another — e.g. crypto vwap_reversion losses shouldn't
+        # pause the AAPL vwap_reversion edge.
+        self._combo_cooldown_until: dict[tuple[str, str], float] = {}
+        self._combo_cooldown_count: dict[tuple[str, str], int] = {}
+        self._combo_cooldown_last_trade_id: dict[tuple[str, str], int] = {}
         self._running = True
         self._start_time = time.time()
         self._last_signal_time = time.time()
@@ -1234,83 +1236,52 @@ class AutoTrader:
             return False
         return True
 
-    def _strategy_cooldown_allows(self, strategy: str) -> bool:
-        """Return False if this strategy is on cooldown after consecutive losses."""
-        until = self._strategy_cooldown_until.get(strategy, 0.0)
+    def _combo_cooldown_allows(self, symbol: str, strategy: str) -> bool:
+        """Return False if this (symbol, strategy) combo is on cooldown after consecutive losses."""
+        key = (symbol, strategy)
+        until = self._combo_cooldown_until.get(key, 0.0)
         if time.time() < until:
             remaining = int(until - time.time())
             logger.info(
-                "strategy_cooldown_active | strategy={} remaining_sec={}",
-                strategy, remaining,
+                "combo_cooldown_active | symbol={} strategy={} remaining_sec={}",
+                symbol, strategy, remaining,
             )
             return False
 
-        recent = self.db.get_recent_closed_by_strategy(
-            strategy, limit=STRATEGY_COOLDOWN_LOSSES,
+        recent = self.db.get_recent_closed_trades(
+            symbol=symbol, strategy=strategy, limit=STRATEGY_COOLDOWN_LOSSES,
         )
         if len(recent) < STRATEGY_COOLDOWN_LOSSES:
             return True
 
         if all(t["outcome"] == "loss" for t in recent):
             most_recent_id = recent[0].get("id", 0)
-            last_trigger_id = self._strategy_cooldown_last_trade_id.get(strategy, 0)
+            last_trigger_id = self._combo_cooldown_last_trade_id.get(key, 0)
             if most_recent_id == last_trigger_id:
                 # Same trades as last cooldown — no new losses since then, allow trading
                 return True
 
-            self._strategy_cooldown_count[strategy] = (
-                self._strategy_cooldown_count.get(strategy, 0) + 1
-            )
-            count = self._strategy_cooldown_count[strategy]
-            self._strategy_cooldown_last_trade_id[strategy] = most_recent_id
-
-            # Auto-disable after too many cooldown triggers
-            if count >= STRATEGY_DISABLE_AFTER_COOLDOWNS:
-                self._auto_disable_strategy(strategy, count)
-                return False
+            self._combo_cooldown_count[key] = self._combo_cooldown_count.get(key, 0) + 1
+            count = self._combo_cooldown_count[key]
+            self._combo_cooldown_last_trade_id[key] = most_recent_id
 
             cooldown_until = time.time() + STRATEGY_COOLDOWN_MINUTES * 60
-            self._strategy_cooldown_until[strategy] = cooldown_until
+            self._combo_cooldown_until[key] = cooldown_until
             logger.warning(
-                "strategy_cooldown_triggered | strategy={} consecutive_losses={} cooldown_min={} cooldown_count={}",
-                strategy, STRATEGY_COOLDOWN_LOSSES, STRATEGY_COOLDOWN_MINUTES, count,
+                "combo_cooldown_triggered | symbol={} strategy={} consecutive_losses={} cooldown_min={} trigger_count={}",
+                symbol, strategy, STRATEGY_COOLDOWN_LOSSES, STRATEGY_COOLDOWN_MINUTES, count,
             )
             self.telegram.send_message(
-                f"STRATEGY COOLDOWN ({count}/{STRATEGY_DISABLE_AFTER_COOLDOWNS})\n\n{strategy}: {STRATEGY_COOLDOWN_LOSSES} consecutive losses\nPaused for {STRATEGY_COOLDOWN_MINUTES} minutes\n\n⚠️ Will auto-disable after {STRATEGY_DISABLE_AFTER_COOLDOWNS} cooldowns",
+                f"COMBO COOLDOWN\n\n{symbol} / {strategy}: {STRATEGY_COOLDOWN_LOSSES} consecutive losses\nPaused {STRATEGY_COOLDOWN_MINUTES} min (trigger #{count})",
                 parse_mode="",
             )
             return False
 
-        # A win resets the cooldown count
-        if self._strategy_cooldown_count.get(strategy, 0) > 0:
+        # A win in the recent window resets the trigger count
+        if self._combo_cooldown_count.get(key, 0) > 0:
             if any(t["outcome"] == "win" for t in recent):
-                self._strategy_cooldown_count[strategy] = 0
+                self._combo_cooldown_count[key] = 0
         return True
-
-    def _auto_disable_strategy(self, strategy: str, cooldown_count: int) -> None:
-        """Auto-disable a strategy in config.json after repeated cooldowns."""
-        try:
-            cfg = load_config()
-            if strategy in cfg.get("strategies", {}):
-                cfg["strategies"][strategy]["enabled"] = False
-                try:
-                    from main import _config_lock
-                except ImportError:
-                    _config_lock = threading.Lock()
-                with _config_lock, open(CONFIG_PATH, "w", encoding="utf-8") as fh:
-                    json.dump(cfg, fh, indent=2)
-                    fh.write("\n")
-
-            logger.warning(
-                "strategy_auto_disabled | strategy={} cooldown_count={}",
-                strategy, cooldown_count,
-            )
-            self.telegram.send_message(
-                f"🚫 STRATEGY AUTO-DISABLED\n\n{strategy} has been disabled after {cooldown_count} consecutive cooldown triggers.\n\nReview performance and manually re-enable in config when ready.",
-                parse_mode="",
-            )
-        except Exception:
-            logger.exception("strategy_auto_disable_failed | strategy={}", strategy)
 
     def _symbol_size_multiplier(self, symbol: str) -> float:
         """Per-symbol position-size multiplier from config (e.g. 0.5x for newly-added names)."""
@@ -1728,7 +1699,7 @@ class AutoTrader:
         if not self._correlation_allows(symbol, result.direction.value):
             return
 
-        if not self._strategy_cooldown_allows(result.strategy_name):
+        if not self._combo_cooldown_allows(symbol, result.strategy_name):
             return
 
         if not self._combo_allows(symbol, result.strategy_name):

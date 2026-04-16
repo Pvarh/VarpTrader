@@ -2,18 +2,16 @@
   "watchlist": {
     "stocks": [
       "AAPL",
-      "TSLA",
       "NVDA",
       "SPY",
-      "QQQ"
+      "QQQ",
+      "MSFT",
+      "GOOGL"
     ],
     "crypto": [
       "BTC/USDT",
-      "BTC/USDC",
       "ETH/USDT",
-      "ETH/USDC",
-      "SOL/USDT",
-      "SOL/USDC"
+      "SOL/USDT"
     ]
   },
   "strategies": {
@@ -27,47 +25,114 @@
       "enabled": true,
       "fast_ema": 20,
       "slow_ema": 50,
-      "volume_confirmation": true
+      "volume_confirmation": false,
+      "rr_ratio": 2.5
     },
     "ema_pullback": {
-      "enabled": true,
+      "enabled": false,
       "fast_ema": 20,
       "slow_ema": 50,
-      "pullback_pct": 0.002,
+      "pullback_pct": 0.008,
+      "min_adx": 20,
       "rsi_max_long": 55,
       "rsi_min_short": 45,
       "stop_loss_pct": 0.015,
-      "volume_confirmation": true
+      "volume_confirmation": false,
+      "rr_ratio": 2.5
     },
     "vwap_reversion": {
-      "enabled": false,
-      "vwap_deviation_pct": 0.3
+      "enabled": true,
+      "atr_band_multiplier": 1.8,
+      "atr_period": 14,
+      "volume_confirmation_mult": 1.3,
+      "slope_max": 0.0008,
+      "slope_lookback": 20,
+      "stop_loss_atr_mult": 1.0
     },
     "rsi_momentum": {
-      "enabled": true,
-      "rsi_oversold": 28.0,
-      "rsi_overbought": 72.0,
-      "rsi_neutral_low": 45,
-      "rsi_neutral_high": 55,
-      "stop_loss_pct": 0.025
+      "enabled": false,
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
+      "rsi_neutral_low": 42,
+      "rsi_neutral_high": 58,
+      "stop_loss_pct": 0.02
     },
     "bollinger_fade": {
+      "enabled": false,
+      "bb_period": 20,
+      "bb_std": 2.2,
+      "rsi_threshold_low": 30,
+      "rsi_threshold_high": 60
+    },
+    "vpoc_bounce": {
+      "enabled": false,
+      "num_bins": 20,
+      "proximity_pct": 0.004,
+      "bounce_candles": 2,
+      "min_poc_volume_pct": 0.12,
+      "stop_loss_pct": 0.01,
+      "rr_ratio": 2.5
+    },
+    "macd_divergence": {
+      "enabled": false,
+      "fast_period": 12,
+      "slow_period": 26,
+      "signal_period": 9,
+      "divergence_lookback": 30,
+      "min_swing_distance": 3,
+      "stop_loss_pct": 0.012,
+      "rr_ratio": 3.0
+    },
+    "funding_rate": {
+      "enabled": true,
+      "threshold": 0.0003,
+      "extreme_threshold": 0.001,
+      "stop_loss_pct": 0.012,
+      "rr_ratio": 3.0
+    },
+    "squeeze_momentum": {
       "enabled": true,
       "bb_period": 20,
       "bb_std": 2.0,
-      "rsi_threshold_low": 35,
-      "rsi_threshold_high": 65
+      "kc_period": 20,
+      "kc_atr_mult": 1.5,
+      "min_squeeze_bars": 6,
+      "stop_loss_pct": 0.015,
+      "atr_stop_multiplier": 1.5,
+      "rr_ratio": 2.0
+    },
+    "oi_divergence": {
+      "enabled": true,
+      "price_change_pct": 0.01,
+      "oi_change_pct": 0.03,
+      "stop_loss_pct": 0.015,
+      "atr_stop_multiplier": 1.5,
+      "rr_ratio": 2.0
+    },
+    "volume_spike_reversal": {
+      "enabled": true,
+      "volume_spike_mult": 3.0,
+      "rsi_oversold": 25,
+      "rsi_overbought": 75,
+      "min_wick_ratio": 0.5,
+      "stop_loss_pct": 0.012,
+      "atr_stop_multiplier": 1.5,
+      "rr_ratio": 2.0
     }
   },
   "risk": {
-    "position_size_pct": 0.008,
-    "stop_loss_pct": 0.02,
+    "position_size_pct": 0.005,
+    "stop_loss_pct": 0.015,
     "daily_loss_limit_pct": 0.03,
-    "min_reward_ratio": 2.0,
+    "min_reward_ratio": 2.5,
     "atr_period": 14,
     "atr_multiplier": 1.5,
     "max_positions": 10,
-    "max_daily_trades": 20
+    "max_daily_trades": 30,
+    "max_hold_hours_crypto": 72,
+    "max_hold_hours_stock": 120,
+    "atr_stop_multiplier": 1.5,
+    "confirmation_candle": false
   },
   "whale": {
     "enabled": true,
@@ -83,17 +148,18 @@
   },
   "swing_advisor": {
     "enabled": true,
-    "min_confidence_to_block": 70,
+    "min_confidence_to_block": 80,
     "model": "claude-sonnet-4-6"
   },
   "analysis": {
     "nightly_run_time": "23:30",
-    "lookback_days": 30,
+    "lookback_days": 90,
     "min_trades_for_suggestion": 15,
     "min_winrate_diff_to_suggest": 0.1,
-    "model": "claude-sonnet-4-6",
+    "model": "claude-opus-4-6",
     "use_batch_api": true,
-    "auto_apply_changes": true
+    "auto_apply_changes": false,
+    "analysis_interval_days": 3
   },
   "go_live_thresholds": {
     "orb_min_win_rate": 0.56,
@@ -103,19 +169,19 @@
   },
   "bounds": {
     "stop_loss_pct": {
-      "min": 0.005,
-      "max": 0.05
+      "min": 0.01,
+      "max": 0.03
     },
     "position_size_pct": {
-      "min": 0.005,
-      "max": 0.03
+      "min": 0.002,
+      "max": 0.01
     },
     "rsi_oversold": {
       "min": 20,
-      "max": 40
+      "max": 35
     },
     "rsi_overbought": {
-      "min": 60,
+      "min": 65,
       "max": 80
     }
   },
@@ -125,9 +191,20 @@
     "public_url": "http://162.55.50.28:8000"
   },
   "regime": {
-    "adx_threshold": 15.0
+    "adx_threshold": 20.0
   },
   "polymarket": {
     "block_short_threshold": 0.65
+  },
+  "funding_rate_filter": {
+    "enabled": true,
+    "block_threshold": 0.0003
+  },
+  "session_bias": {
+    "enabled": false
+  },
+  "symbol_size_multipliers": {
+    "MSFT": 0.5,
+    "GOOGL": 0.5
   }
 }

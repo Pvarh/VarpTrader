@@ -50,8 +50,14 @@ from signals.first_candle import FirstCandleSignal
 from signals.ema_cross import EMACrossSignal
 from signals.ema_pullback import EMAPullbackSignal
 from signals.vwap_reversion import VWAPReversionSignal
+from signals.vpoc_bounce import VPOCBounceSignal
+from signals.macd_divergence import MACDDivergenceSignal
 from signals.rsi_momentum import RSIMomentumSignal
 from signals.bollinger_fade import BollingerFadeSignal
+from signals.funding_rate import FundingRateSignal
+from signals.squeeze_momentum import SqueezeMomentumSignal
+from signals.oi_divergence import OIDivergenceSignal
+from signals.volume_spike_reversal import VolumeSpikeReversalSignal
 from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
 from signals.regime_detector import RegimeDetector
@@ -96,7 +102,16 @@ load_dotenv()
 CONFIG_PATH = Path("config.json")
 OVERSEER_TRIGGER_PATH = LOG_DIR / "overseer_trigger.json"
 NIGHTLY_ANALYSIS_TRIGGER_PATH = LOG_DIR / "nightly_analysis_trigger.json"
-STARVATION_OVERSEER_MODEL = "claude-opus-4-6"
+STARVATION_OVERSEER_MODEL = "claude-sonnet-4-6"
+DRAWDOWN_HALT_PCT = float(os.getenv("DRAWDOWN_HALT_PCT", "0.05"))
+DRAWDOWN_RESUME_PCT = float(os.getenv("DRAWDOWN_RESUME_PCT", "0.03"))
+STRATEGY_COOLDOWN_LOSSES = int(os.getenv("STRATEGY_COOLDOWN_LOSSES", "3"))
+STRATEGY_COOLDOWN_MINUTES = int(os.getenv("STRATEGY_COOLDOWN_MINUTES", "60"))
+WINRATE_LOOKBACK = int(os.getenv("WINRATE_LOOKBACK", "10"))
+WINRATE_SIZE_MIN = float(os.getenv("WINRATE_SIZE_MIN", "0.5"))
+WINRATE_SIZE_MAX = float(os.getenv("WINRATE_SIZE_MAX", "1.5"))
+STRATEGY_DISABLE_AFTER_COOLDOWNS = int(os.getenv("STRATEGY_DISABLE_AFTER_COOLDOWNS", "3"))
+COMBO_DISABLE_MIN_TRADES = int(os.getenv("COMBO_DISABLE_MIN_TRADES", "15"))
 SIGNAL_RETRY_COOLDOWN_SECONDS = int(
     os.getenv("SIGNAL_RETRY_COOLDOWN_SECONDS", "900")
 )
@@ -111,9 +126,12 @@ RECENTLY_EXITED_COOLDOWN_SECONDS = int(
 _US_EASTERN = ZoneInfo("US/Eastern")
 
 
+_config_lock = threading.Lock()
+
+
 def load_config() -> dict:
     """Load and return the config.json file."""
-    with open(CONFIG_PATH, encoding="utf-8") as f:
+    with _config_lock, open(CONFIG_PATH, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -298,7 +316,7 @@ class AutoTrader:
         analysis_cfg = self.config.get("analysis", {})
         self.llm_advisor = LLMAdvisor(
             api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-            model=analysis_cfg.get("model", "claude-sonnet-4-6"),
+            model=analysis_cfg.get("model", "claude-opus-4-6"),
         )
         self.config_updater = ConfigUpdater(str(CONFIG_PATH))
         self.report_builder = ReportBuilder()
@@ -323,6 +341,7 @@ class AutoTrader:
             telegram=self.telegram,
             paper_trade=self.paper_trade,
             paper_executor=self.paper_executor,
+            config=self.config,
         )
 
         # -- Regime / sentiment / session bias ------------------------------
@@ -344,6 +363,13 @@ class AutoTrader:
         # -- State -----------------------------------------------------------
         self._daily_trade_count = 0
         self._in_flight_symbols: set[str] = set()  # Track symbols being processed in current scan cycle
+        # key: f"{symbol}:{strategy_name}" -> (result, created_at, trigger_candle_ts)
+        self._pending_signals: dict[str, tuple] = {}
+        self._peak_equity: float = 0.0
+        self._drawdown_halted: bool = False
+        self._strategy_cooldown_until: dict[str, float] = {}  # strategy -> timestamp
+        self._strategy_cooldown_count: dict[str, int] = {}  # strategy -> cooldown trigger count
+        self._strategy_cooldown_last_trade_id: dict[str, int] = {}  # strategy -> trade id that last triggered cooldown
         self._running = True
         self._start_time = time.time()
         self._last_signal_time = time.time()
@@ -379,6 +405,12 @@ class AutoTrader:
             VWAPReversionSignal(strat_cfg["vwap_reversion"]),
             RSIMomentumSignal(strat_cfg["rsi_momentum"]),
             BollingerFadeSignal(strat_cfg["bollinger_fade"]),
+            VPOCBounceSignal(strat_cfg["vpoc_bounce"]),
+            MACDDivergenceSignal(strat_cfg["macd_divergence"]),
+            FundingRateSignal(strat_cfg.get("funding_rate", {"enabled": False})),
+            SqueezeMomentumSignal(strat_cfg.get("squeeze_momentum", {"enabled": False})),
+            OIDivergenceSignal(strat_cfg.get("oi_divergence", {"enabled": False})),
+            VolumeSpikeReversalSignal(strat_cfg.get("volume_spike_reversal", {"enabled": False})),
         ]
 
     def _refresh_runtime_components(self) -> None:
@@ -433,6 +465,8 @@ class AutoTrader:
             stock_feed=self.stock_feed,
             crypto_feed=self.crypto_feed,
             order_validator=self.order_validator,
+            telegram=self.telegram,
+            config_updater=self.config_updater,
         )
 
     def reload_config(self) -> None:
@@ -662,6 +696,10 @@ class AutoTrader:
             logger.warning("no_account_equity")
             return
 
+        if not self._check_drawdown(account_value):
+            logger.info("scan_stocks_skipped | reason=drawdown_breaker")
+            return
+
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         daily_pnl = self.db.get_daily_pnl(today_str)
         if not self.kill_switch.is_trading_allowed(daily_pnl, account_value):
@@ -713,8 +751,15 @@ class AutoTrader:
             logger.info("whale_sell_flag_active | symbol={}", symbol)
             whale_flag = 1
 
+        # -- Check any pending confirmation-candle signals --------------------
+        self._check_pending_signals(
+            symbol, candles_5m, account_value, current_positions, "stock", whale_flag,
+        )
+
         for sig in self.signals:
             if not sig.is_enabled():
+                continue
+            if not self._strategy_allowed_for_market(sig.name, "stock"):
                 continue
             try:
                 result = self._run_signal(
@@ -726,7 +771,8 @@ class AutoTrader:
                 self._record_signal_activity()
 
                 # -- Fast VWAP pre-check ----------------------------------------
-                # Block longs below 1h VWAP, shorts above 1h VWAP
+                # Block longs well below 1h VWAP, shorts well above 1h VWAP
+                # 0.5% buffer prevents filtering in choppy/ranging conditions
                 if (
                     candles_1h
                     and len(candles_1h) >= 10
@@ -736,13 +782,14 @@ class AutoTrader:
                     vwap_series = Indicators.vwap(candles_1h)
                     if vwap_series:
                         vwap_1h = vwap_series[-1]
-                        if result.direction == SignalDirection.LONG and current_price < vwap_1h:
+                        vwap_buffer = vwap_1h * 0.005
+                        if result.direction == SignalDirection.LONG and current_price < vwap_1h - vwap_buffer:
                             logger.info(
                                 "vwap_blocked_long | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
                             )
                             continue
-                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h:
+                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h + vwap_buffer:
                             logger.info(
                                 "vwap_blocked_short | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
@@ -780,9 +827,9 @@ class AutoTrader:
                     )
                     continue
 
-                self._process_signal(
+                self._maybe_defer_signal(
                     result, symbol, "stock", account_value,
-                    current_positions, whale_flag,
+                    current_positions, whale_flag, candles_5m,
                 )
             except Exception:
                 logger.exception(
@@ -831,6 +878,10 @@ class AutoTrader:
 
         if account_value <= 0:
             logger.warning("no_crypto_account_value")
+            return
+
+        if not self._check_drawdown(account_value):
+            logger.info("scan_crypto_skipped | reason=drawdown_breaker")
             return
 
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -891,6 +942,11 @@ class AutoTrader:
             )
             return
 
+        # -- Check any pending confirmation-candle signals --------------------
+        self._check_pending_signals(
+            symbol, candles_5m, account_value, current_positions, "crypto", 0,
+        )
+
         for sig in self.signals:
             if not sig.is_enabled():
                 continue
@@ -906,7 +962,8 @@ class AutoTrader:
                 self._record_signal_activity()
 
                 # -- Fast VWAP pre-check ----------------------------------------
-                # Block longs below 1h VWAP, shorts above 1h VWAP
+                # Block longs well below 1h VWAP, shorts well above 1h VWAP
+                # 0.5% buffer prevents filtering in choppy/ranging conditions
                 if (
                     candles_1h
                     and len(candles_1h) >= 10
@@ -916,13 +973,14 @@ class AutoTrader:
                     vwap_series = Indicators.vwap(candles_1h)
                     if vwap_series:
                         vwap_1h = vwap_series[-1]
-                        if result.direction == SignalDirection.LONG and current_price < vwap_1h:
+                        vwap_buffer = vwap_1h * 0.005
+                        if result.direction == SignalDirection.LONG and current_price < vwap_1h - vwap_buffer:
                             logger.info(
                                 "vwap_blocked_long | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
                             )
                             continue
-                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h:
+                        if result.direction == SignalDirection.SHORT and current_price > vwap_1h + vwap_buffer:
                             logger.info(
                                 "vwap_blocked_short | symbol={} strategy={} price={:.4f} vwap={:.4f}",
                                 symbol, sig.name, current_price, vwap_1h,
@@ -961,9 +1019,34 @@ class AutoTrader:
                     )
                     continue
 
-                self._process_signal(
+                # -- Funding rate crowd filter --------------------------------
+                fr_filter = self.config.get("funding_rate_filter", {})
+                if fr_filter.get("enabled", False) and result.direction:
+                    fr = self.crypto_feed.get_funding_rate(symbol)
+                    block_threshold = fr_filter.get("block_threshold", 0.0003)
+                    if fr is not None:
+                        if (
+                            result.direction == SignalDirection.LONG
+                            and fr > block_threshold
+                        ):
+                            logger.info(
+                                "funding_blocked_long | symbol={} strategy={} rate={:.6f}",
+                                symbol, sig.name, fr,
+                            )
+                            continue
+                        if (
+                            result.direction == SignalDirection.SHORT
+                            and fr < -block_threshold
+                        ):
+                            logger.info(
+                                "funding_blocked_short | symbol={} strategy={} rate={:.6f}",
+                                symbol, sig.name, fr,
+                            )
+                            continue
+
+                self._maybe_defer_signal(
                     result, symbol, "crypto", account_value,
-                    current_positions, 0,
+                    current_positions, 0, candles_5m,
                 )
             except Exception:
                 logger.exception(
@@ -975,14 +1058,304 @@ class AutoTrader:
     # Signal evaluation helpers
     # ====================================================================
     # Strategies that are excluded from crypto markets
-    _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle"}
+    _STOCK_ONLY_STRATEGIES: set[str] = {"bollinger_fade", "first_candle", "rsi_momentum"}
+    _CRYPTO_ONLY_STRATEGIES: set[str] = {"funding_rate", "oi_divergence"}
+
+    # Correlation groups: symbols that move together. Max 2 same-direction
+    # positions per group to limit overlapping exposure.
+    _CORRELATION_GROUPS: list[set[str]] = [
+        {"SPY", "QQQ", "AAPL", "NVDA"},  # US large-cap tech / index
+        {"BTC/USDT", "BTC/USDC"},        # BTC pairs
+        {"ETH/USDT", "ETH/USDC"},        # ETH pairs
+        {"SOL/USDT", "SOL/USDC"},        # SOL pairs
+    ]
+    _MAX_CORRELATED_POSITIONS: int = 2
 
     @staticmethod
     def _strategy_allowed_for_market(strategy_name: str, market: str) -> bool:
         """Return False if *strategy_name* is excluded from *market*."""
         if market == "crypto" and strategy_name in AutoTrader._STOCK_ONLY_STRATEGIES:
             return False
+        if market == "stock" and strategy_name in AutoTrader._CRYPTO_ONLY_STRATEGIES:
+            return False
         return True
+
+    def _confirmation_candle_enabled(self) -> bool:
+        return bool(self.config.get("risk", {}).get("confirmation_candle", False))
+
+    def _check_pending_signals(
+        self,
+        symbol: str,
+        candles: list,
+        account_value: float,
+        current_positions: int,
+        market: str,
+        whale_flag: int = 0,
+    ) -> None:
+        """Execute pending signals confirmed by the latest closed candle."""
+        if not candles:
+            return
+        now = datetime.now(timezone.utc)
+        expire_secs = 900  # 15 min — discard if no new candle in time
+        current_candle = candles[-1]
+        to_delete = []
+        for key, (result, created_at, trigger_candle_ts) in list(self._pending_signals.items()):
+            if not key.startswith(f"{symbol}:"):
+                continue
+            age = (now - created_at).total_seconds()
+            if age > expire_secs:
+                logger.info(
+                    "pending_signal_expired | symbol={} strategy={} age={:.0f}s",
+                    symbol, result.strategy_name, age,
+                )
+                to_delete.append(key)
+                continue
+            if current_candle.timestamp <= trigger_candle_ts:
+                continue  # same candle, wait for next
+            confirmed = (
+                result.direction == SignalDirection.LONG and current_candle.close > current_candle.open
+            ) or (
+                result.direction == SignalDirection.SHORT and current_candle.close < current_candle.open
+            )
+            to_delete.append(key)
+            if confirmed:
+                logger.info(
+                    "pending_signal_confirmed | symbol={} strategy={} direction={}",
+                    symbol, result.strategy_name,
+                    result.direction.value if result.direction else "none",
+                )
+                self._process_signal(result, symbol, market, account_value, current_positions, whale_flag)
+            else:
+                logger.info(
+                    "pending_signal_not_confirmed | symbol={} strategy={} -- discarding",
+                    symbol, result.strategy_name,
+                )
+        for key in to_delete:
+            self._pending_signals.pop(key, None)
+
+    def _maybe_defer_signal(
+        self,
+        result: "SignalResult",
+        symbol: str,
+        market: str,
+        account_value: float,
+        current_positions: int,
+        whale_flag: int,
+        candles: list,
+    ) -> None:
+        """Process signal immediately, or store pending if confirmation_candle is on."""
+        if not self._confirmation_candle_enabled():
+            self._process_signal(result, symbol, market, account_value, current_positions, whale_flag)
+            return
+        key = f"{symbol}:{result.strategy_name}"
+        if key in self._pending_signals:
+            return  # already waiting
+        trigger_candle_ts = candles[-1].timestamp if candles else datetime.now(timezone.utc)
+        self._pending_signals[key] = (result, datetime.now(timezone.utc), trigger_candle_ts)
+        logger.info(
+            "pending_signal_stored | symbol={} strategy={} direction={} -- awaiting confirmation candle",
+            symbol, result.strategy_name,
+            result.direction.value if result.direction else "none",
+        )
+
+    def _correlation_allows(self, symbol: str, direction: str) -> bool:
+        """Check if opening this position would exceed correlation limits."""
+        open_trades = self.db.get_open_trades()
+        if not open_trades:
+            return True
+        for group in self._CORRELATION_GROUPS:
+            if symbol not in group:
+                continue
+            same_dir_count = sum(
+                1 for t in open_trades
+                if t["symbol"] in group and t["direction"] == direction
+            )
+            if same_dir_count >= self._MAX_CORRELATED_POSITIONS:
+                logger.info(
+                    "correlation_blocked | symbol={} direction={} group_count={}",
+                    symbol, direction, same_dir_count,
+                )
+                return False
+        return True
+
+    def _check_drawdown(self, current_equity: float) -> bool:
+        """Check equity drawdown from peak. Returns True if trading is allowed."""
+        if current_equity <= 0:
+            return True
+
+        if current_equity > self._peak_equity:
+            self._peak_equity = current_equity
+
+        if self._peak_equity <= 0:
+            return True
+
+        drawdown = (self._peak_equity - current_equity) / self._peak_equity
+
+        if self._drawdown_halted:
+            if drawdown <= DRAWDOWN_RESUME_PCT:
+                self._drawdown_halted = False
+                logger.info(
+                    "drawdown_breaker_resumed | equity={} peak={} drawdown_pct={:.2%}",
+                    round(current_equity, 2), round(self._peak_equity, 2), drawdown,
+                )
+                self.telegram.send_message(
+                    f"DRAWDOWN BREAKER RESUMED\n\nEquity: ${current_equity:,.2f}\nPeak: ${self._peak_equity:,.2f}\nDrawdown: {drawdown:.1%}",
+                    parse_mode="",
+                )
+                return True
+            return False
+
+        if drawdown >= DRAWDOWN_HALT_PCT:
+            self._drawdown_halted = True
+            logger.warning(
+                "drawdown_breaker_triggered | equity={} peak={} drawdown_pct={:.2%}",
+                round(current_equity, 2), round(self._peak_equity, 2), drawdown,
+            )
+            self.telegram.send_message(
+                f"DRAWDOWN BREAKER TRIGGERED\n\nEquity: ${current_equity:,.2f}\nPeak: ${self._peak_equity:,.2f}\nDrawdown: {drawdown:.1%}\n\nTrading paused until drawdown recovers to {DRAWDOWN_RESUME_PCT:.0%}",
+                parse_mode="",
+            )
+            return False
+
+        return True
+
+    def _combo_allows(self, symbol: str, strategy: str) -> bool:
+        """Skip (symbol, strategy) combos with >= COMBO_DISABLE_MIN_TRADES and 0% win rate."""
+        recent = self.db.get_recent_closed_trades(
+            symbol=symbol, strategy=strategy, limit=COMBO_DISABLE_MIN_TRADES,
+        )
+        if len(recent) < COMBO_DISABLE_MIN_TRADES:
+            return True
+        if all(t["outcome"] == "loss" for t in recent):
+            logger.warning(
+                "combo_auto_disabled | symbol={} strategy={} trades={} win_rate=0%",
+                symbol, strategy, len(recent),
+            )
+            return False
+        return True
+
+    def _strategy_cooldown_allows(self, strategy: str) -> bool:
+        """Return False if this strategy is on cooldown after consecutive losses."""
+        until = self._strategy_cooldown_until.get(strategy, 0.0)
+        if time.time() < until:
+            remaining = int(until - time.time())
+            logger.info(
+                "strategy_cooldown_active | strategy={} remaining_sec={}",
+                strategy, remaining,
+            )
+            return False
+
+        recent = self.db.get_recent_closed_by_strategy(
+            strategy, limit=STRATEGY_COOLDOWN_LOSSES,
+        )
+        if len(recent) < STRATEGY_COOLDOWN_LOSSES:
+            return True
+
+        if all(t["outcome"] == "loss" for t in recent):
+            most_recent_id = recent[0].get("id", 0)
+            last_trigger_id = self._strategy_cooldown_last_trade_id.get(strategy, 0)
+            if most_recent_id == last_trigger_id:
+                # Same trades as last cooldown — no new losses since then, allow trading
+                return True
+
+            self._strategy_cooldown_count[strategy] = (
+                self._strategy_cooldown_count.get(strategy, 0) + 1
+            )
+            count = self._strategy_cooldown_count[strategy]
+            self._strategy_cooldown_last_trade_id[strategy] = most_recent_id
+
+            # Auto-disable after too many cooldown triggers
+            if count >= STRATEGY_DISABLE_AFTER_COOLDOWNS:
+                self._auto_disable_strategy(strategy, count)
+                return False
+
+            cooldown_until = time.time() + STRATEGY_COOLDOWN_MINUTES * 60
+            self._strategy_cooldown_until[strategy] = cooldown_until
+            logger.warning(
+                "strategy_cooldown_triggered | strategy={} consecutive_losses={} cooldown_min={} cooldown_count={}",
+                strategy, STRATEGY_COOLDOWN_LOSSES, STRATEGY_COOLDOWN_MINUTES, count,
+            )
+            self.telegram.send_message(
+                f"STRATEGY COOLDOWN ({count}/{STRATEGY_DISABLE_AFTER_COOLDOWNS})\n\n{strategy}: {STRATEGY_COOLDOWN_LOSSES} consecutive losses\nPaused for {STRATEGY_COOLDOWN_MINUTES} minutes\n\n⚠️ Will auto-disable after {STRATEGY_DISABLE_AFTER_COOLDOWNS} cooldowns",
+                parse_mode="",
+            )
+            return False
+
+        # A win resets the cooldown count
+        if self._strategy_cooldown_count.get(strategy, 0) > 0:
+            if any(t["outcome"] == "win" for t in recent):
+                self._strategy_cooldown_count[strategy] = 0
+        return True
+
+    def _auto_disable_strategy(self, strategy: str, cooldown_count: int) -> None:
+        """Auto-disable a strategy in config.json after repeated cooldowns."""
+        try:
+            cfg = load_config()
+            if strategy in cfg.get("strategies", {}):
+                cfg["strategies"][strategy]["enabled"] = False
+                try:
+                    from main import _config_lock
+                except ImportError:
+                    _config_lock = threading.Lock()
+                with _config_lock, open(CONFIG_PATH, "w", encoding="utf-8") as fh:
+                    json.dump(cfg, fh, indent=2)
+                    fh.write("\n")
+
+            logger.warning(
+                "strategy_auto_disabled | strategy={} cooldown_count={}",
+                strategy, cooldown_count,
+            )
+            self.telegram.send_message(
+                f"🚫 STRATEGY AUTO-DISABLED\n\n{strategy} has been disabled after {cooldown_count} consecutive cooldown triggers.\n\nReview performance and manually re-enable in config when ready.",
+                parse_mode="",
+            )
+        except Exception:
+            logger.exception("strategy_auto_disable_failed | strategy={}", strategy)
+
+    def _symbol_size_multiplier(self, symbol: str) -> float:
+        """Per-symbol position-size multiplier from config (e.g. 0.5x for newly-added names)."""
+        multipliers = self.config.get("symbol_size_multipliers", {})
+        try:
+            return float(multipliers.get(symbol, 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _winrate_size_multiplier(self, strategy: str) -> float:
+        """Scale position size based on recent win rate for this strategy.
+
+        Returns a multiplier between WINRATE_SIZE_MIN and WINRATE_SIZE_MAX.
+        With 0% win rate -> MIN, 50% -> 1.0, 100% -> MAX.
+        Falls back to 1.0 when there's no history.
+        """
+        recent = self.db.get_recent_closed_by_strategy(
+            strategy, limit=WINRATE_LOOKBACK,
+        )
+        if len(recent) < 3:
+            return 1.0
+
+        wins = sum(1 for t in recent if t["outcome"] == "win")
+        win_rate = wins / len(recent)
+
+        # Linear interpolation: 0% -> MIN, 50% -> 1.0, 100% -> MAX
+        if win_rate <= 0.5:
+            multiplier = WINRATE_SIZE_MIN + (1.0 - WINRATE_SIZE_MIN) * (win_rate / 0.5)
+        else:
+            multiplier = 1.0 + (WINRATE_SIZE_MAX - 1.0) * ((win_rate - 0.5) / 0.5)
+
+        logger.info(
+            "winrate_size_adjustment | strategy={} win_rate={:.0%} trades={} multiplier={:.2f}",
+            strategy, win_rate, len(recent), multiplier,
+        )
+        return multiplier
+
+    # Strategies that are allowed to go long in ranging markets.
+    # Mean-reversion (vpoc_bounce) and divergence (macd_divergence) strategies
+    # expect price to bounce/reverse — they need ranging conditions, not trends.
+    _RANGING_LONG_ALLOWED: set[str] = {
+        "vpoc_bounce", "macd_divergence", "funding_rate",
+        "volume_spike_reversal", "oi_divergence", "vwap_reversion",
+    }
+    _REGIME_EXEMPT: set[str] = {"squeeze_momentum"}
 
     @staticmethod
     def _regime_allows(
@@ -993,7 +1366,9 @@ class AutoTrader:
         """Check whether *regime* permits *direction* for *strategy_name*.
 
         Rules:
-        - Longs are ONLY allowed in trending_up regime (not ranging)
+        - Longs are ONLY allowed in trending_up regime, EXCEPT for
+          reversal/mean-reversion strategies (vpoc_bounce, macd_divergence)
+          which are also allowed in ranging markets
         - rsi_momentum  shorts only in trending_down or ranging
         - bollinger_fade fires freely in ranging, but in trends it only
           takes pullbacks in the direction of the trend
@@ -1003,9 +1378,17 @@ class AutoTrader:
         if direction is None:
             return True
 
-        # Global long gate: only allow longs in confirmed uptrend
+        # Exempt strategies bypass the regime filter entirely
+        if strategy_name in AutoTrader._REGIME_EXEMPT:
+            return True
+
+        # Global long gate: only allow longs in confirmed uptrend,
+        # except reversal strategies which also work in ranging markets
         if direction == SignalDirection.LONG and regime != "trending_up":
-            return False
+            if strategy_name in AutoTrader._RANGING_LONG_ALLOWED and regime == "ranging":
+                pass  # allowed
+            else:
+                return False
 
         if strategy_name == "rsi_momentum":
             if direction == SignalDirection.SHORT:
@@ -1028,7 +1411,7 @@ class AutoTrader:
         ema_cross is excluded: it is trend-following and the crossover
         itself is a stronger directional signal than intraday VWAP.
         """
-        return strategy_name in {"first_candle", "ema_pullback"}
+        return strategy_name in {"first_candle"}
 
     def _run_signal(
         self,
@@ -1042,6 +1425,11 @@ class AutoTrader:
         candles_1h: list | None = None,
     ) -> SignalResult:
         """Run a specific signal's evaluation method."""
+        # Compute ATR once for all signal types
+        atr_period = self.config.get("risk", {}).get("atr_period", 14)
+        atr_series = Indicators.atr(candles, atr_period)
+        current_atr = atr_series[-1] if atr_series else 0.0
+
         if isinstance(sig, FirstCandleSignal) and first_candle:
             now = datetime.now(timezone.utc)
             market_open = now.replace(hour=13, minute=30, second=0, microsecond=0)
@@ -1073,25 +1461,28 @@ class AutoTrader:
 
             return sig.evaluate_from_rsi(
                 symbol=symbol, rsi_5m=rsi_5m, rsi_1h=rsi_1h,
-                current_price=current_price,
+                current_price=current_price, atr=current_atr,
             )
         elif isinstance(sig, VWAPReversionSignal):
+            if market != "stock":
+                return SignalResult(
+                    triggered=False,
+                    strategy_name=sig.name,
+                    reason="vwap_reversion restricted to stocks",
+                )
             vwap_series = Indicators.vwap(candles)
-            vwap = vwap_series[-1] if vwap_series else current_price
-
-            now = datetime.now(timezone.utc)
-            market_open = now.replace(hour=13, minute=30)
-            market_close = now.replace(hour=20, minute=0)
-            mins_since = max(
-                0, int((now - market_open).total_seconds() / 60)
-            )
-            mins_before = max(
-                0, int((market_close - now).total_seconds() / 60)
-            )
+            vwap_val = vwap_series[-1] if vwap_series else current_price
+            atr_vals = Indicators.atr(candles, period=sig.config.get("atr_period", 14))
+            atr_val = atr_vals[-1] if atr_vals else 0.0
+            slope_lb = sig.config.get("slope_lookback", 20)
+            slope_val = Indicators.vwap_slope(vwap_series, lookback=slope_lb)
+            cur_vol = candles[-1].volume if candles else 0.0
+            vol_window = candles[-20:] if len(candles) >= 20 else candles
+            avg_vol = sum(c.volume for c in vol_window) / len(vol_window) if vol_window else 1.0
             return sig.evaluate_from_vwap(
-                symbol=symbol, current_price=current_price, vwap=vwap,
-                recent_candles=candles[-3:], minutes_since_open=mins_since,
-                minutes_before_close=mins_before,
+                symbol=symbol, current_price=current_price,
+                vwap=vwap_val, atr=atr_val, vwap_slope=slope_val,
+                current_volume=cur_vol, avg_volume=avg_vol, market=market,
             )
         elif isinstance(sig, BollingerFadeSignal):
             closes = [c.close for c in candles]
@@ -1146,6 +1537,10 @@ class AutoTrader:
                 if len(volumes) >= 20:
                     avg_vol = sum(volumes[-20:]) / 20
                     if volumes[-1] <= avg_vol:
+                        logger.info(
+                            "volume_confirmation_blocked | signal={} symbol={} vol={:.2f} avg_vol={:.2f}",
+                            sig.name, symbol, volumes[-1], avg_vol,
+                        )
                         return SignalResult(
                             triggered=False, strategy_name=sig.name,
                             reason="Volume below 20-period average",
@@ -1160,7 +1555,7 @@ class AutoTrader:
                 prev_slow_ema=prev_slow,
                 curr_fast_ema=curr_fast,
                 curr_slow_ema=curr_slow,
-                rsi=rsi, current_price=current_price,
+                rsi=rsi, current_price=current_price, atr=current_atr,
             )
         elif isinstance(sig, EMAPullbackSignal):
             ema_candles = (
@@ -1187,6 +1582,10 @@ class AutoTrader:
                 if len(volumes) >= 20:
                     avg_vol = sum(volumes[-20:]) / 20
                     if volumes[-1] <= avg_vol:
+                        logger.info(
+                            "volume_confirmation_blocked | signal={} symbol={} vol={:.2f} avg_vol={:.2f}",
+                            sig.name, symbol, volumes[-1], avg_vol,
+                        )
                         return SignalResult(
                             triggered=False, strategy_name=sig.name,
                             reason="Volume below 20-period average",
@@ -1195,12 +1594,74 @@ class AutoTrader:
             rsi_series = Indicators.rsi(closes, 14)
             rsi = rsi_series[-1] if rsi_series else 50.0
 
+            adx_series = Indicators.adx(ema_candles, 14)
+            adx_val = adx_series[-1] if adx_series else 0.0
+
             return sig.evaluate_pullback(
                 symbol=symbol,
                 current_price=current_price,
                 ema_fast=ema_fast,
                 ema_slow=ema_slow,
-                rsi=rsi,
+                rsi=rsi, atr=current_atr, adx=adx_val,
+            )
+
+        elif isinstance(sig, VPOCBounceSignal):
+            bounce_n = sig.config.get("bounce_candles", 2)
+            return sig.evaluate_from_profile(
+                symbol=symbol, current_price=current_price,
+                session_candles=candles, recent_candles=candles[-bounce_n:],
+                market=market, atr=current_atr,
+            )
+
+        elif isinstance(sig, MACDDivergenceSignal):
+            return sig.evaluate_from_macd(
+                symbol=symbol, current_price=current_price,
+                candles=candles, market=market, atr=current_atr,
+            )
+
+        elif isinstance(sig, FundingRateSignal):
+            funding_rate = self.crypto_feed.get_funding_rate(symbol)
+            if funding_rate is None:
+                return SignalResult(triggered=False, strategy_name=sig.name)
+            return sig.evaluate_from_funding(
+                symbol=symbol, funding_rate=funding_rate,
+                current_price=current_price, atr=current_atr,
+            )
+
+        elif isinstance(sig, SqueezeMomentumSignal):
+            return sig.evaluate_squeeze(
+                symbol=symbol, candles=candles,
+                current_price=current_price, market=market,
+                atr=current_atr,
+            )
+
+        elif isinstance(sig, OIDivergenceSignal):
+            oi_lookback = sig.config.get("oi_lookback_bars", 10)
+            oi_history = self.crypto_feed.get_open_interest_history(
+                symbol, timeframe="5m", limit=oi_lookback + 1,
+            )
+            if len(oi_history) < 2:
+                return SignalResult(triggered=False, strategy_name=sig.name)
+            oi_start = oi_history[0]["openInterestAmount"]
+            oi_end = oi_history[-1]["openInterestAmount"]
+            if oi_start <= 0:
+                return SignalResult(triggered=False, strategy_name=sig.name)
+            oi_change_pct = (oi_end - oi_start) / oi_start
+            # Price change over same lookback
+            lookback_idx = min(oi_lookback, len(candles) - 1)
+            price_start = candles[-(lookback_idx + 1)].close
+            price_change_pct = (current_price - price_start) / price_start if price_start > 0 else 0.0
+            return sig.evaluate_oi_divergence(
+                symbol=symbol, current_price=current_price,
+                price_change_pct=price_change_pct,
+                oi_change_pct=oi_change_pct, atr=current_atr,
+            )
+
+        elif isinstance(sig, VolumeSpikeReversalSignal):
+            return sig.evaluate_spike(
+                symbol=symbol, candles=candles,
+                current_price=current_price, market=market,
+                atr=current_atr,
             )
 
         return sig.evaluate(symbol, candles, current_price, market)
@@ -1264,6 +1725,15 @@ class AutoTrader:
         # Mark this symbol as in-flight immediately
         self._in_flight_symbols.add(symbol)
 
+        if not self._correlation_allows(symbol, result.direction.value):
+            return
+
+        if not self._strategy_cooldown_allows(result.strategy_name):
+            return
+
+        if not self._combo_allows(symbol, result.strategy_name):
+            return
+
         if not self.reward_gate.check(
             result.entry_price, result.stop_loss, result.take_profit
         ):
@@ -1298,6 +1768,23 @@ class AutoTrader:
             account_value, result.entry_price, atr,
             available_cash=available_cash, market=market,
         )
+
+        # Scale quantity by recent win rate AND per-symbol multiplier
+        size_mult = self._winrate_size_multiplier(result.strategy_name)
+        sym_mult = self._symbol_size_multiplier(symbol)
+        effective_mult = size_mult * sym_mult
+        if effective_mult != 1.0:
+            raw_qty = quantity
+            quantity = quantity * effective_mult
+            # Re-apply market rounding
+            if market == "crypto":
+                quantity = float(int(quantity * 1e6) / 1e6)
+            else:
+                quantity = float(max(1, int(quantity)))
+            logger.info(
+                "quantity_scaled | strategy={} symbol={} raw={} scaled={} winrate_mult={:.2f} sym_mult={:.2f}",
+                result.strategy_name, symbol, raw_qty, quantity, size_mult, sym_mult,
+            )
 
         if quantity <= 0:
             logger.warning(
@@ -1338,6 +1825,13 @@ class AutoTrader:
                 )
                 return
             trade_id = order_result.get("trade_id")
+            fill_price = float(order_result.get("fill_price", result.entry_price))
+            slippage = abs(fill_price - result.entry_price) / result.entry_price if result.entry_price else 0.0
+            if slippage > 0.001:  # Log when slippage > 0.1%
+                logger.warning(
+                    "trade_slippage | symbol={} strategy={} expected={} fill={} slippage_pct={:.4%}",
+                    symbol, result.strategy_name, result.entry_price, fill_price, slippage,
+                )
         else:
             if market == "stock":
                 order_result = self.stock_executor.submit_market_order(
@@ -1348,6 +1842,8 @@ class AutoTrader:
                     symbol, side, float(quantity)
                 )
 
+            fill_price = float(order_result.get("fill_price", result.entry_price)) if order_result else result.entry_price
+            slippage = abs(fill_price - result.entry_price) / result.entry_price if result.entry_price else 0.0
             trade = Trade(
                 symbol=symbol,
                 market=market,
@@ -1359,8 +1855,14 @@ class AutoTrader:
                 take_profit=result.take_profit,
                 whale_flag=whale_flag,
                 paper_trade=0,
+                slippage=slippage,
             )
             trade_id = self.db.insert_trade(trade)
+            if slippage > 0.001:  # Log when slippage > 0.1%
+                logger.warning(
+                    "trade_slippage | symbol={} strategy={} expected={} fill={} slippage_pct={:.4%}",
+                    symbol, result.strategy_name, result.entry_price, fill_price, slippage,
+                )
 
         self._daily_trade_count += 1
         self._last_signal_time = time.time()
@@ -1474,30 +1976,19 @@ class AutoTrader:
             approved, rejected = self.config_updater.validate_changes(
                 recommendations
             )
+            # Config changes are handled by the overseer (runs 30 min later
+            # with full context).  The nightly analysis only reports
+            # recommendations -- it never writes to config.json.
             if approved:
-                if auto_apply:
-                    self.config_updater.apply_changes(approved)
-                    self.config = load_config()
-                    logger.info("config_updated | changes={}", approved)
-                else:
-                    logger.info(
-                        "config_changes_pending_approval | changes={}", approved
-                    )
+                logger.info(
+                    "nightly_config_recommendations | changes={} (not applied, overseer handles config)",
+                    approved,
+                )
 
             report_md = self.report_builder.build_daily_report(
                 report_data, config_changes=approved, rejected=rejected
             )
             self.telegram.send_daily_report(report_md)
-            self.telegram.send_message(
-                _build_nightly_change_summary(
-                    config_before,
-                    report_data,
-                    approved,
-                    rejected,
-                    auto_apply=auto_apply,
-                ),
-                parse_mode="",
-            )
 
             from journal.models import AnalysisRun
 
@@ -1505,9 +1996,26 @@ class AutoTrader:
                 trades_analyzed=report_data.get("total_trades", 0),
                 report_markdown=report_md,
                 config_changes_json=json.dumps(approved) if approved else None,
-                approved=1 if (approved and auto_apply) else 0,
+                approved=0,  # Recommendations only
             )
-            self.db.insert_analysis_run(run)
+            run_id = self.db.insert_analysis_run(run)
+
+            summary_text = _build_nightly_change_summary(
+                config_before,
+                report_data,
+                approved,
+                rejected,
+                auto_apply=False,
+            )
+            buttons = [[
+                {"text": "Approve", "callback_data": f"approve:{run_id}"},
+                {"text": "Reject", "callback_data": f"reject:{run_id}"},
+            ]]
+            self.telegram.send_message_with_buttons(
+                text=summary_text,
+                buttons=buttons,
+            )
+
             logger.info("nightly_analysis_complete")
 
         except Exception:
@@ -1947,6 +2455,10 @@ class AutoTrader:
                 return
 
             for update in updates:
+                if "callback_query" in update:
+                    self._handle_telegram_callback(update["callback_query"])
+                    continue
+
                 msg = update.get("message", {})
                 text = (msg.get("text") or "").strip()
                 chat_id = str(msg.get("chat", {}).get("id", ""))
@@ -1976,6 +2488,10 @@ class AutoTrader:
                     self._cmd_buy(argument)
                 elif cmd == "/sell":
                     self._cmd_sell(argument)
+                elif cmd == "/approve":
+                    self._cmd_approve_reject(action="approve", run_id_str=argument)
+                elif cmd == "/reject":
+                    self._cmd_approve_reject(action="reject", run_id_str=argument)
                 elif cmd == "/help":
                     self._cmd_help()
                 else:
@@ -1985,6 +2501,81 @@ class AutoTrader:
                     )
         except Exception:
             logger.debug("telegram_poll_error")
+
+    def _handle_telegram_callback(self, callback_query: dict) -> None:
+        """Process a Telegram inline keyboard callback (approve/reject config changes)."""
+        callback_id = callback_query.get("id", "")
+        data = callback_query.get("data", "")
+        message = callback_query.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        message_id = message.get("message_id")
+
+        if ":" not in data:
+            self.telegram.answer_callback_query(callback_id, "Invalid action")
+            return
+
+        action, run_id_str = data.split(":", 1)
+        try:
+            run_id = int(run_id_str)
+        except ValueError:
+            self.telegram.answer_callback_query(callback_id, "Invalid run ID")
+            return
+
+        conn = self.db._get_connection()
+        row = conn.execute(
+            "SELECT * FROM analysis_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        if not row:
+            self.telegram.answer_callback_query(callback_id, f"Run {run_id} not found")
+            return
+
+        run = dict(row)
+        if run.get("approved") != 0:
+            label = "approved" if run["approved"] == 1 else "rejected"
+            self.telegram.answer_callback_query(callback_id, f"Already {label}")
+            return
+
+        if action == "approve":
+            changes_json = run.get("config_changes_json")
+            applied = False
+            if changes_json:
+                changes = json.loads(changes_json)
+                approved_changes, _ = self.config_updater.validate_changes(changes)
+                if approved_changes:
+                    self.config_updater.apply_changes(approved_changes)
+                    self.config = load_config()
+                    applied = True
+                    logger.info(
+                        "telegram_config_approved | run_id={} changes={}",
+                        run_id,
+                        list(approved_changes.keys()),
+                    )
+
+            conn.execute("UPDATE analysis_runs SET approved = 1 WHERE id = ?", (run_id,))
+            conn.commit()
+
+            toast = "Approved and applied" if applied else "Approved (no changes to apply)"
+            self.telegram.answer_callback_query(callback_id, toast)
+            if message_id:
+                original_text = message.get("text", "")
+                self.telegram.edit_message_text(
+                    chat_id, message_id,
+                    f"{original_text}\n\n--- APPROVED ---",
+                )
+
+        elif action == "reject":
+            conn.execute("UPDATE analysis_runs SET approved = 2 WHERE id = ?", (run_id,))
+            conn.commit()
+            logger.info("telegram_config_rejected | run_id={}", run_id)
+            self.telegram.answer_callback_query(callback_id, "Rejected")
+            if message_id:
+                original_text = message.get("text", "")
+                self.telegram.edit_message_text(
+                    chat_id, message_id,
+                    f"{original_text}\n\n--- REJECTED ---",
+                )
+        else:
+            self.telegram.answer_callback_query(callback_id, "Unknown action")
 
     def _cmd_status(self) -> None:
         equity = 0.0
@@ -2078,6 +2669,43 @@ class AutoTrader:
         )
         logger.info("kill_switch_manual_reset")
 
+    def _cmd_approve_reject(self, action: str, run_id_str: str) -> None:
+        """Handle /approve [run_id] and /reject [run_id] commands."""
+        # If no run_id given, use the latest pending run
+        if not run_id_str:
+            try:
+                with self.db._cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM analysis_runs WHERE approved = 0 "
+                        "ORDER BY id DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        self.telegram.send_message("No pending analysis runs.", parse_mode="")
+                        return
+                    run_id = row["id"]
+            except Exception:
+                logger.exception("telegram_approve_reject_lookup_error")
+                self.telegram.send_message("Error looking up pending runs.", parse_mode="")
+                return
+        else:
+            try:
+                run_id = int(run_id_str)
+            except ValueError:
+                self.telegram.send_message(f"Invalid run ID: {run_id_str}", parse_mode="")
+                return
+
+        # Reuse the callback handler logic
+        fake_callback = {
+            "id": "",
+            "data": f"{action}:{run_id}",
+            "message": {"chat": {"id": self.telegram._chat_id}},
+        }
+        self._handle_telegram_callback(fake_callback)
+        # Send confirmation since answer_callback_query won't show for fake callbacks
+        label = "APPROVED" if action == "approve" else "REJECTED"
+        self.telegram.send_message(f"Analysis run #{run_id} {label}.", parse_mode="")
+
     def _cmd_help(self) -> None:
         self.telegram.send_message(
             "VarpTrader Commands:\n"
@@ -2087,6 +2715,8 @@ class AutoTrader:
             "/config - Strategy and risk config\n"
             "/buy SYMBOL - Open a manual paper long (also supports 'buy SYMBOL')\n"
             "/sell SYMBOL - Close an open paper position (also supports 'sell SYMBOL')\n"
+            "/approve [ID] - Approve pending nightly config changes\n"
+            "/reject [ID] - Reject pending nightly config changes\n"
             "/kill - Activate kill switch\n"
             "/resume - Reset kill switch\n"
             "/help - This message",
@@ -2132,6 +2762,8 @@ def run_live(args) -> None:
         stock_feed=trader.stock_feed,
         crypto_feed=trader.crypto_feed,
         order_validator=trader.order_validator,
+        telegram=trader.telegram,
+        config_updater=trader.config_updater,
     )
 
     # -- Start dashboard in background thread ------------------------------
@@ -2228,10 +2860,14 @@ def run_live(args) -> None:
         id="daily_reset",
     )
 
-    # -- Nightly analysis --------------------------------------------------
+    # -- Analysis every N days (default: 3) using Opus -----------------------
+    analysis_interval_days = trader.config.get("analysis", {}).get(
+        "analysis_interval_days", 3
+    )
     scheduler.add_job(
         trader.run_nightly_analysis,
         CronTrigger(
+            day=f"*/{analysis_interval_days}",
             hour=nightly_hour,
             minute=nightly_minute,
             timezone=tz,
@@ -2347,6 +2983,10 @@ def run_backtest(args) -> None:
             signals_list.append(
                 BollingerFadeSignal(strat_cfg["bollinger_fade"])
             )
+        if strat_cfg.get("vpoc_bounce", {}).get("enabled", False):
+            signals_list.append(VPOCBounceSignal(strat_cfg["vpoc_bounce"]))
+        if strat_cfg.get("macd_divergence", {}).get("enabled", False):
+            signals_list.append(MACDDivergenceSignal(strat_cfg["macd_divergence"]))
 
         engine = BacktestEngine(config, initial_capital=args.capital)
         result = engine.run(candles, signals_list, candles_1h=candles_1h)

@@ -82,6 +82,11 @@
 - 3 consecutive losses on a combo → 60-min pause for that combo only. Win in the window resets the trigger count.
 - Removed the "auto-disable whole strategy after 3 cooldowns" escalation and its `STRATEGY_DISABLE_AFTER_COOLDOWNS` constant. Long-horizon muting is the job of the per-combo gate at 15 trades — the cooldown is only a short-horizon circuit breaker.
 
+### Telegram notification audit (2026-04-16)
+- Removed noise push notifications: weekly swing-bias update, combo-cooldown alert, signal-starvation + overseer-triggered/queued alerts. Logs retained; overseer still auto-triggers on starvation.
+- Kept safety alerts (kill switch, drawdown breaker, overseer error), nightly analysis reports, and all interactive `/cmd` replies.
+- Redesigned `send_heartbeat` (sent every 2h) to be the single status channel: equity + cash, today's trades + PnL, open positions with per-position PnL, last closed trade with age, markets (stocks OPEN/CLOSED, crypto live), system status (nominal / kill-switch HALTED / drawdown breaker active), uptime.
+
 ---
 
 ## Pre-restart workflow (durable rule)

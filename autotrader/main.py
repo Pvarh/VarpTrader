@@ -663,12 +663,7 @@ class AutoTrader:
                 logger.warning("swing_advisor_no_symbols")
                 return
             summary = self.swing_advisor.run(symbols)
-
-            lines = ["Weekly Swing Bias Update"]
             biases = summary.get("biases", {})
-            for sym, bias in biases.items():
-                lines.append(f"  {sym}: {bias}")
-            self.telegram.send_message("\n".join(lines))
             logger.info("swing_advisor_complete | biases={}", biases)
         except Exception:
             logger.exception("swing_advisor_error")
@@ -1270,10 +1265,6 @@ class AutoTrader:
             logger.warning(
                 "combo_cooldown_triggered | symbol={} strategy={} consecutive_losses={} cooldown_min={} trigger_count={}",
                 symbol, strategy, STRATEGY_COOLDOWN_LOSSES, STRATEGY_COOLDOWN_MINUTES, count,
-            )
-            self.telegram.send_message(
-                f"COMBO COOLDOWN\n\n{symbol} / {strategy}: {STRATEGY_COOLDOWN_LOSSES} consecutive losses\nPaused {STRATEGY_COOLDOWN_MINUTES} min (trigger #{count})",
-                parse_mode="",
             )
             return False
 
@@ -2006,55 +1997,112 @@ class AutoTrader:
     # Heartbeat
     # ====================================================================
     def send_heartbeat(self) -> None:
-        """Send a periodic heartbeat message to Telegram."""
-        try:
-            uptime_sec = time.time() - self._start_time
-            hours = int(uptime_sec // 3600)
-            minutes = int((uptime_sec % 3600) // 60)
-            if hours > 0:
-                uptime_str = f"{hours}h {minutes}m"
-            else:
-                uptime_str = f"{minutes}m"
+        """Send a periodic heartbeat message to Telegram.
 
-            positions = []
+        Single-shot status summary: equity, today's activity, open positions,
+        market/system health, and the last closed trade. Designed to answer
+        "is the bot alive, making money, and doing anything?" at a glance.
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            uptime_sec = time.time() - self._start_time
+            up_h = int(uptime_sec // 3600)
+            up_m = int((uptime_sec % 3600) // 60)
+            uptime_str = f"{up_h}h {up_m}m" if up_h else f"{up_m}m"
+
+            # -- Portfolio snapshot ---------------------------------------
+            positions: list[str] = []
             cash = 0.0
             equity = 0.0
             unrealized = 0.0
             if self.paper_trade and self.paper_executor:
-                pos_list = self.paper_executor.get_positions()
-                portfolio = self.paper_executor._portfolio
-                cash = portfolio.cash
+                pos_list = self.paper_executor.get_positions() or []
+                cash = self.paper_executor._portfolio.cash
+                invested = 0.0
                 for p in pos_list:
                     sym = p.get("symbol", "?")
-                    side = p.get("side", "?")
+                    side = str(p.get("side", "?")).upper()
                     entry = p.get("avg_entry_price", 0)
                     pnl = p.get("unrealized_pl", 0.0)
                     unrealized += pnl
+                    invested += abs(p.get("qty", 0)) * entry
                     pnl_str = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
-                    positions.append(f"  {sym} {side} @ {entry:,.2f} ({pnl_str})")
-                invested = sum(
-                    abs(p.get("qty", 0)) * p.get("avg_entry_price", 0)
-                    for p in pos_list
-                )
+                    positions.append(f"  {sym} {side} @ ${entry:,.2f} ({pnl_str})")
                 equity = cash + invested + unrealized
 
-            pos_lines = "\n".join(positions) if positions else "  None"
-
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            # -- Today's activity -----------------------------------------
+            today_str = now.strftime("%Y-%m-%d")
             daily_pnl = self.db.get_daily_pnl(today_str)
             daily_trade_count = self.db.get_daily_trade_count(today_str)
 
-            text = (
-                f"\U0001f493 VarpTrader Heartbeat\n"
-                f"Equity: ${equity:,.0f} | Cash: ${cash:,.0f}\n"
-                f"Trades Today: {daily_trade_count}\n"
-                f"Positions: {len(positions)}\n"
-                f"{pos_lines}\n"
-                f"Daily P&L: ${daily_pnl:+,.0f} | Unrealized: ${unrealized:+,.0f}\n"
-                f"Uptime: {uptime_str}"
+            # -- Market + system status -----------------------------------
+            stocks_state = "OPEN" if self._is_us_market_open() else "CLOSED"
+            markets_line = f"stocks {stocks_state} | crypto live"
+
+            status_flags: list[str] = []
+            if getattr(self, "kill_switch", None) and self.kill_switch.halted:
+                status_flags.append("kill-switch HALTED")
+            if getattr(self, "_drawdown_halted", False):
+                status_flags.append("drawdown breaker active")
+            status_line = ", ".join(status_flags) if status_flags else "nominal"
+
+            # -- Last closed trade (for context) --------------------------
+            last_trade_line = ""
+            try:
+                recent = self.db.get_closed_trades(limit=1)
+                if recent:
+                    t = recent[0]
+                    exit_ts = t.get("exit_timestamp") or t.get("closed_at")
+                    age_str = ""
+                    if exit_ts:
+                        try:
+                            exit_dt = datetime.fromisoformat(str(exit_ts).replace("Z", "+00:00"))
+                            if exit_dt.tzinfo is None:
+                                exit_dt = exit_dt.replace(tzinfo=timezone.utc)
+                            age_sec = (now - exit_dt).total_seconds()
+                            if age_sec < 3600:
+                                age_str = f"{int(age_sec / 60)}m ago"
+                            elif age_sec < 86400:
+                                age_str = f"{int(age_sec / 3600)}h ago"
+                            else:
+                                age_str = f"{int(age_sec / 86400)}d ago"
+                        except (ValueError, TypeError):
+                            pass
+                    pnl = t.get("pnl", 0.0) or 0.0
+                    pnl_str = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
+                    outcome = str(t.get("outcome", "?")).upper()
+                    last_trade_line = (
+                        f"Last trade: {t.get('symbol', '?')} "
+                        f"{str(t.get('direction', '?')).upper()} "
+                        f"{t.get('strategy', '?')} {outcome} {pnl_str}"
+                        + (f" ({age_str})" if age_str else "")
+                    )
+            except Exception:
+                pass  # Heartbeat should never break on enrichment
+
+            # -- Compose message ------------------------------------------
+            lines = [
+                f"VarpTrader Heartbeat · {now.strftime('%H:%M UTC')}",
+                "",
+                f"Equity: ${equity:,.0f} | Cash: ${cash:,.0f}",
+                f"Today: {daily_trade_count} trades | P&L: ${daily_pnl:+,.0f}",
+                f"Open: {len(positions)} positions | Unrealized: ${unrealized:+,.0f}",
+            ]
+            if positions:
+                lines.extend(positions)
+            if last_trade_line:
+                lines.append(last_trade_line)
+            lines.extend([
+                f"Markets: {markets_line}",
+                f"Status: {status_line}",
+                f"Uptime: {uptime_str}",
+            ])
+
+            self.telegram.send_message("\n".join(lines), parse_mode="")
+            logger.info(
+                "heartbeat_sent | equity={} positions={} uptime={} status={}",
+                round(equity, 2), len(positions), uptime_str, status_line,
             )
-            self.telegram.send_message(text, parse_mode="")
-            logger.info("heartbeat_sent | equity={} positions={} uptime={}", round(equity, 2), len(positions), uptime_str)
         except Exception:
             logger.exception("heartbeat_error")
 
@@ -2168,29 +2216,13 @@ class AutoTrader:
                         "signal_starvation | hours_since_last_signal={:.1f}",
                         hours_since,
                     )
-                    self.telegram.send_message(
-                        f"SIGNAL STARVATION\n\n"
-                        f"No signals have fired in {hours_since:.1f} hours.\n"
-                        f"Filters may be too aggressive.\n"
-                        f"Check regime detector, session bias, and RSI thresholds.",
-                        parse_mode="",
-                    )
                     self._starvation_alerted = True
                 if not self._starvation_overseer_triggered:
                     status = self.trigger_overseer_async("signal_starvation")
-                    if status == "running":
-                        self.telegram.send_message(
-                            f"OVERSEER TRIGGERED\n\n"
-                            f"Reason: signal starvation ({hours_since:.1f}h without signal).",
-                            parse_mode="",
-                        )
-                    elif status == "queued":
-                        self.telegram.send_message(
-                            f"OVERSEER QUEUED\n\n"
-                            f"Reason: signal starvation ({hours_since:.1f}h without signal).\n"
-                            f"Host watcher will execute the overseer run.",
-                            parse_mode="",
-                        )
+                    logger.info(
+                        "signal_starvation_overseer | status={} hours_since={:.1f}",
+                        status, hours_since,
+                    )
                     self._starvation_overseer_triggered = True
             else:
                 self._starvation_alerted = False

@@ -21,16 +21,21 @@ def test_send_heartbeat_includes_daily_trade_count() -> None:
     trader._start_time = time.time() - 3700
     trader.paper_trade = False
     trader.paper_executor = None
+    trader.kill_switch = SimpleNamespace(halted=False)
+    trader._drawdown_halted = False
     trader.db = MagicMock()
     trader.db.get_daily_pnl.return_value = 123.45
     trader.db.get_daily_trade_count.return_value = 7
+    trader.db.get_closed_trades.return_value = []
     trader.telegram = MagicMock()
 
     AutoTrader.send_heartbeat(trader)
 
     sent_text = trader.telegram.send_message.call_args.args[0]
-    assert "Trades Today: 7" in sent_text
-    assert "Daily P&L: $+123" in sent_text
+    assert "Today: 7 trades" in sent_text
+    assert "P&L: $+123" in sent_text
+    assert "Markets:" in sent_text
+    assert "Status: nominal" in sent_text
 
 
 def test_check_signal_starvation_triggers_overseer_once_per_episode() -> None:
@@ -45,7 +50,7 @@ def test_check_signal_starvation_triggers_overseer_once_per_episode() -> None:
     AutoTrader.check_signal_starvation(trader)
 
     trader.trigger_overseer_async.assert_called_once_with("signal_starvation")
-    assert trader.telegram.send_message.call_count == 2
+    trader.telegram.send_message.assert_not_called()
     assert trader._starvation_alerted is True
     assert trader._starvation_overseer_triggered is True
 
@@ -61,7 +66,7 @@ def test_trigger_overseer_async_queues_when_claude_missing(tmp_path: Path) -> No
     assert status == "queued"
     payload = json.loads(trigger_path.read_text(encoding="utf-8"))
     assert payload["trigger_reason"] == "signal_starvation"
-    assert payload["model"] == "claude-opus-4-6"
+    assert payload["model"] == "claude-sonnet-4-6"
 
 
 def test_run_nightly_analysis_sends_change_summary() -> None:
@@ -96,9 +101,11 @@ def test_run_nightly_analysis_sends_change_summary() -> None:
         AutoTrader.run_nightly_analysis(trader)
 
     trader.telegram.send_daily_report.assert_called_once_with("daily report")
-    summary_text = trader.telegram.send_message.call_args.args[0]
+    # With approved changes, code sends buttons instead of plain message
+    call_kwargs = trader.telegram.send_message_with_buttons.call_args
+    summary_text = call_kwargs.kwargs.get("text") or call_kwargs.args[0]
     assert "NIGHTLY CONFIG UPDATE" in summary_text
-    assert "Applied: 1" in summary_text
+    assert "Pending approval: 1" in summary_text
     assert "stop_loss_pct: 0.015 -> 0.02" in summary_text
     assert "Rejected: 1" in summary_text
 
@@ -198,7 +205,7 @@ def test_poll_telegram_commands_executes_manual_sell() -> None:
 
 def test_directional_vwap_filter_only_applies_to_trend_following_strategies() -> None:
     assert AutoTrader._uses_directional_vwap_filter("ema_cross") is False
-    assert AutoTrader._uses_directional_vwap_filter("ema_pullback") is True
+    assert AutoTrader._uses_directional_vwap_filter("ema_pullback") is False
     assert AutoTrader._uses_directional_vwap_filter("first_candle") is True
     assert AutoTrader._uses_directional_vwap_filter("rsi_momentum") is False
     assert AutoTrader._uses_directional_vwap_filter("bollinger_fade") is False
@@ -269,6 +276,7 @@ def test_stock_signal_ignores_session_bias_when_disabled() -> None:
     trader._last_signal_time = 0.0
     trader._starvation_alerted = True
     trader._starvation_overseer_triggered = True
+    trader._pending_signals = {}
     trader._run_signal = MagicMock(
         return_value=SignalResult(
             triggered=True,
@@ -301,6 +309,8 @@ def test_reload_config_rebuilds_runtime_components_when_changed() -> None:
             "vwap_reversion": {"enabled": False, "vwap_deviation_pct": 0.3},
             "rsi_momentum": {"enabled": False, "rsi_oversold": 25, "rsi_overbought": 75, "rsi_neutral_low": 45, "rsi_neutral_high": 55},
             "bollinger_fade": {"enabled": False, "bb_period": 20, "bb_std": 2.0, "rsi_threshold_low": 35, "rsi_threshold_high": 65},
+            "vpoc_bounce": {"enabled": False},
+            "macd_divergence": {"enabled": False},
         },
         "risk": {
             "position_size_pct": 0.005,
@@ -339,6 +349,8 @@ def test_reload_config_rebuilds_runtime_components_when_changed() -> None:
     trader.paper_executor = None
     trader.stock_feed = MagicMock()
     trader.crypto_feed = MagicMock()
+    trader.telegram = MagicMock()
+    trader.config_updater = MagicMock()
 
     with patch("main.load_config", return_value=new_config), patch("main.dashboard_init") as mock_dashboard:
         AutoTrader.reload_config(trader)

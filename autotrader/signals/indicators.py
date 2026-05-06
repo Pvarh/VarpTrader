@@ -549,53 +549,6 @@ class Indicators:
 
         return poc_price, vah, val
 
-    # ------------------------------------------------------------------
-    # Keltner Channels
-    # ------------------------------------------------------------------
-    @staticmethod
-    def keltner_channels(
-        candles: list[OHLCV],
-        ema_period: int = 20,
-        atr_period: int = 14,
-        atr_mult: float = 1.5,
-    ) -> tuple[list[float], list[float], list[float]]:
-        """Compute Keltner Channels: EMA ± ATR multiplier.
-
-        Parameters
-        ----------
-        candles:
-            List of OHLCV bars, oldest first.
-        ema_period:
-            Period for the centre EMA line.
-        atr_period:
-            Period for the ATR calculation.
-        atr_mult:
-            Multiplier applied to ATR for upper/lower bands.
-
-        Returns
-        -------
-        tuple[list[float], list[float], list[float]]
-            ``(upper, middle, lower)`` each as ``list[float]`` of the same
-            length as *candles*.  Early values are ``NaN``.
-        """
-        if not candles:
-            return ([], [], [])
-        n = len(candles)
-        closes = [c.close for c in candles]
-        middle = Indicators.ema(closes, ema_period)
-        atr_vals = Indicators.atr(candles, atr_period)
-
-        upper = [float("nan")] * n
-        lower = [float("nan")] * n
-        for i in range(n):
-            m = middle[i]
-            a = atr_vals[i]
-            if math.isnan(m) or a == 0.0:
-                continue
-            upper[i] = m + atr_mult * a
-            lower[i] = m - atr_mult * a
-        return (upper, middle, lower)
-
     @staticmethod
     def vwap_slope(vwap_values: list[float], lookback: int = 20) -> float:
         """Compute normalized linear regression slope of VWAP.

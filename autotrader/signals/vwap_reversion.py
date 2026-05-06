@@ -89,7 +89,7 @@ class VWAPReversionSignal(BaseSignal):
             return no_signal
 
         # Swing bias check
-        if not self.check_swing_bias(symbol, direction):
+        if self.check_swing_bias(symbol, direction):
             return SignalResult(
                 triggered=False, strategy_name=self.name,
                 reason=f"Swing bias blocks {direction.value}",

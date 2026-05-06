@@ -97,6 +97,10 @@ class PositionMonitor:
         # Track trade IDs that have already had a partial profit take.
         self._partial_taken: set[int] = set()
 
+        # Strategy auto-disable: count consecutive cooldown triggers.
+        # After STRATEGY_DISABLE_AFTER_COOLDOWNS cooldowns, auto-disable.
+        self._strategy_cooldown_count: dict[str, int] = {}
+
         logger.info(
             "position_monitor_initialised | paper_trade={paper_trade}",
             paper_trade=paper_trade,

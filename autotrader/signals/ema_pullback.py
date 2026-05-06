@@ -59,7 +59,6 @@ class EMAPullbackSignal(BaseSignal):
         ema_slow: float,
         rsi: float,
         atr: float = 0.0,
-        adx: float = 0.0,
     ) -> SignalResult:
         """Evaluate an EMA pullback entry.
 
@@ -77,19 +76,7 @@ class EMAPullbackSignal(BaseSignal):
         if not self.is_enabled():
             return SignalResult(triggered=False, strategy_name=self.name)
 
-        # ADX trend strength gate — reject weak/ranging markets
-        min_adx = self.config.get("min_adx", 20)
-        if adx > 0 and adx < min_adx:
-            logger.debug(
-                "adx_too_weak | symbol={} adx={:.1f} min={}",
-                symbol, adx, min_adx,
-            )
-            return SignalResult(
-                triggered=False, strategy_name=self.name,
-                reason=f"ADX {adx:.1f} below minimum {min_adx}",
-            )
-
-        pullback_pct = self.config.get("pullback_pct", 0.008)
+        pullback_pct = self.config.get("pullback_pct", 0.002)
         rsi_max_long = self.config.get("rsi_max_long", 55)
         rsi_min_short = self.config.get("rsi_min_short", 45)
         stop_loss_pct = self.config.get("stop_loss_pct", 0.015)

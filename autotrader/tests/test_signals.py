@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, ".")
 
 from journal.models import OHLCV
-from signals.base_signal import BaseSignal, SignalResult, SignalDirection
+from signals.base_signal import SignalResult, SignalDirection
 from signals.indicators import Indicators
 from signals.vwap_reversion import VWAPReversionSignal
 from signals.macd_divergence import MACDDivergenceSignal
@@ -560,7 +560,7 @@ class TestVWAPReversionRedesign:
 
     @pytest.fixture(autouse=True)
     def _no_swing_block(self):
-        with patch.object(BaseSignal, "check_swing_bias", return_value=True):
+        with patch("signals.vwap_reversion.VWAPReversionSignal.check_swing_bias", return_value=False):
             yield
 
     def test_long_below_lower_band(self, config: dict) -> None:
@@ -646,7 +646,7 @@ class TestVWAPReversionSwingBiasRedesign:
         }
 
     def test_long_blocked_by_swing_bias(self, config: dict) -> None:
-        with patch.object(BaseSignal, "check_swing_bias", return_value=False):
+        with patch("signals.vwap_reversion.VWAPReversionSignal.check_swing_bias", return_value=True):
             sig = VWAPReversionSignal(config)
             result = sig.evaluate_from_vwap(
                 symbol="AAPL", current_price=93.5, vwap=100.0,
@@ -1071,7 +1071,7 @@ class TestVPOCBounce:
 
     @pytest.fixture(autouse=True)
     def _no_swing_block(self):
-        with patch.object(BaseSignal, "check_swing_bias", return_value=True):
+        with patch("signals.vpoc_bounce.VPOCBounceSignal.check_swing_bias", return_value=False):
             yield
 
     def _make_session_candles(self, data: list[tuple]) -> list[OHLCV]:

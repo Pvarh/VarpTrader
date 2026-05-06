@@ -42,8 +42,8 @@
 - Deploy config.json, data/, logs/, .env, or overseer state files to VPS
 
 ## Active safety features (deployed 2026-03-29):
-- **Strategy cooldown**: pauses strategy for 60 min after 3 consecutive losses
-- **Strategy auto-disable**: disables strategy in config.json after 3 cooldown triggers
+- **Per-(symbol, strategy) cooldown**: pauses combo after 3 consecutive losses. Escalates 60min → 240min → 1440min (24h) on repeat triggers. Replaced the older per-strategy auto-disable.
+- **Per-combo gate** (`_combo_allows`): mutes a (symbol, strategy) combo when n ≥ fast_n with WR ≤ 25% and net PnL < 0, OR n ≥ COMBO_DISABLE_MIN_TRADES (15) with net PnL < 0. fast_n is 5 for crypto, 8 for stocks.
 - **Dynamic position sizing**: scales 0.5x–1.5x based on recent win rate (last 10 trades)
 - **Partial profit taking**: closes 50% at 50% TP progress, remainder rides trailing stop
 - **3-tier trailing stop**: breakeven at 50% TP, trail 50% at 75%, trail 75% at 100%+

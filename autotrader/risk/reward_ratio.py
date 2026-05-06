@@ -70,7 +70,7 @@ class RewardRatioGate:
             return False
 
         ratio: float = reward / risk
-        approved: bool = ratio >= self._min_ratio
+        approved: bool = ratio >= self._min_ratio - 1e-9
 
         logger.info(
             "reward_ratio_checked | entry_price={entry_price} stop_loss={stop_loss} take_profit={take_profit} risk={risk} reward={reward} ratio={ratio} min_ratio={min_ratio} approved={approved}",

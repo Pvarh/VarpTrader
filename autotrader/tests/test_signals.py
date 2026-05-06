@@ -1,5 +1,7 @@
 """Tests for all trading signal strategies."""
 
+from __future__ import annotations
+
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -9,7 +11,11 @@ import pytest
 sys.path.insert(0, ".")
 
 from journal.models import OHLCV
-from signals.base_signal import SignalResult, SignalDirection
+from signals.base_signal import BaseSignal, SignalResult, SignalDirection
+from signals.indicators import Indicators
+from signals.vwap_reversion import VWAPReversionSignal
+from signals.macd_divergence import MACDDivergenceSignal
+from signals.funding_rate import FundingRateSignal
 
 
 # ---------------------------------------------------------------------------
@@ -538,125 +544,117 @@ class TestEMACrossSwingBias:
 # VWAP Reversion
 # ===========================================================================
 
-class TestVWAPReversion:
-    """Tests for the VWAP mean reversion signal."""
-
+class TestVWAPReversionRedesign:
     @pytest.fixture
     def config(self) -> dict:
         return {
             "enabled": True,
-            "vwap_deviation_pct": 0.3,  # 0.3% -> 0.003 after /100
-            "momentum_candles": 3,
+            "atr_band_multiplier": 1.5,
+            "atr_period": 14,
+            "volume_confirmation_mult": 1.2,
+            "slope_max": 0.001,
+            "slope_lookback": 20,
+            "stop_loss_atr_mult": 1.0,
+            "rr_ratio": 2.0,
         }
 
     @pytest.fixture(autouse=True)
-    def mock_swing_advisor(self):
-        with patch(
-            "analysis.swing_advisor.SwingAdvisor.should_block_trade",
-            return_value=False,
-        ):
+    def _no_swing_block(self):
+        with patch.object(BaseSignal, "check_swing_bias", return_value=True):
             yield
 
-    def test_long_signal_below_vwap_with_bullish_momentum(self, config: dict) -> None:
-        """BUY when price is 0.3% below VWAP and last 3 candles show bullish momentum."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        vwap = 100.0
-        price = 99.65  # 0.35% below VWAP (below the 0.3% band = 99.7)
-        # Last 3 candles bullish: each close > open
-        candles = [
-            make_candle(close=99.5, open_=99.3, ts_offset_min=i * 5)
-            for i in range(3)
-        ]
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=price, vwap=vwap,
-            recent_candles=candles, minutes_since_open=60,
-            minutes_before_close=120,
+    def test_long_below_lower_band(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=95.0, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is True
+        assert not result.triggered
+
+    def test_long_triggers_at_band(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
+        )
+        assert result.triggered
         assert result.direction == SignalDirection.LONG
+        assert result.take_profit > result.entry_price
+        assert result.stop_loss < result.entry_price
 
-    def test_short_signal_above_vwap_with_bearish_momentum(self, config: dict) -> None:
-        """SELL when price is 0.3% above VWAP and last 3 candles bearish."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        vwap = 100.0
-        price = 100.35  # 0.35% above VWAP (above the 0.3% band = 100.3)
-        candles = [
-            make_candle(close=100.3, open_=100.5, ts_offset_min=i * 5)
-            for i in range(3)
-        ]
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=price, vwap=vwap,
-            recent_candles=candles, minutes_since_open=60,
-            minutes_before_close=120,
+    def test_short_triggers_at_upper_band(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=107.0, vwap=100.0,
+            atr=4.0, vwap_slope=-0.0002, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is True
+        assert result.triggered
         assert result.direction == SignalDirection.SHORT
+        assert result.take_profit < result.entry_price
+        assert result.stop_loss > result.entry_price
 
-    def test_no_signal_when_within_vwap_band(self, config: dict) -> None:
-        """No signal when price is within 0.3% of VWAP."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=100.1, vwap=100.0,
-            recent_candles=make_candle_series([100.0, 100.05, 100.1]),
-            minutes_since_open=60, minutes_before_close=120,
+    def test_no_trigger_slope_too_steep(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.005, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is False
+        assert not result.triggered
+        assert "slope" in result.reason.lower()
 
-    def test_no_signal_outside_valid_trading_hours(self, config: dict) -> None:
-        """No signal in mid-session (only first 3 hours and last 1 hour)."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        result = signal.evaluate_from_vwap(
-            symbol="TEST", current_price=99.5, vwap=100.0,
-            recent_candles=make_candle_series([99.4, 99.45, 99.5]),
-            minutes_since_open=200,  # > 180 min
-            minutes_before_close=120,  # > 60 min
+    def test_no_trigger_low_volume(self, config: dict) -> None:
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=800.0,
+            avg_volume=1000.0, market="stock",
         )
-        assert result.triggered is False
+        assert not result.triggered
+        assert "volume" in result.reason.lower()
+
+    def test_disabled(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = VWAPReversionSignal(config)
+        result = sig.evaluate_from_vwap(
+            symbol="AAPL", current_price=93.5, vwap=100.0,
+            atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+            avg_volume=1000.0, market="stock",
+        )
+        assert not result.triggered
 
 
 # ===========================================================================
 # VWAP Reversion -- Swing Bias Blocking
 # ===========================================================================
 
-class TestVWAPReversionSwingBias:
-    """Tests that swing bias blocking works for VWAP reversion signals."""
-
+class TestVWAPReversionSwingBiasRedesign:
     @pytest.fixture
     def config(self) -> dict:
         return {
             "enabled": True,
-            "vwap_deviation_pct": 0.3,
-            "momentum_candles": 3,
+            "atr_band_multiplier": 1.5,
+            "atr_period": 14,
+            "volume_confirmation_mult": 1.2,
+            "slope_max": 0.001,
+            "slope_lookback": 20,
+            "stop_loss_atr_mult": 1.0,
+            "rr_ratio": 2.0,
         }
 
     def test_long_blocked_by_swing_bias(self, config: dict) -> None:
-        """VWAP long signal is blocked when swing advisor says to block."""
-        from signals.vwap_reversion import VWAPReversionSignal
-
-        signal = VWAPReversionSignal(config)
-        candles = [
-            make_candle(close=99.5, open_=99.3, ts_offset_min=i * 5)
-            for i in range(3)
-        ]
-        with patch(
-            "analysis.swing_advisor.SwingAdvisor.should_block_trade",
-            return_value=True,
-        ):
-            result = signal.evaluate_from_vwap(
-                symbol="TEST", current_price=99.65, vwap=100.0,
-                recent_candles=candles, minutes_since_open=60,
-                minutes_before_close=120,
+        with patch.object(BaseSignal, "check_swing_bias", return_value=False):
+            sig = VWAPReversionSignal(config)
+            result = sig.evaluate_from_vwap(
+                symbol="AAPL", current_price=93.5, vwap=100.0,
+                atr=4.0, vwap_slope=0.0003, current_volume=1500.0,
+                avg_volume=1000.0, market="stock",
             )
-        assert result.triggered is False
-        assert "swing bias" in result.reason.lower()
+            assert not result.triggered
+            assert "swing" in result.reason.lower()
 
 
 # ===========================================================================
@@ -935,3 +933,468 @@ class TestSignalDisabled:
             atr_20d=2.0,
         )
         assert result.triggered is False
+
+
+# ---------------------------------------------------------------------------
+# TestMACDIndicator
+# ---------------------------------------------------------------------------
+
+class TestMACDIndicator:
+    def test_macd_basic_output_shape(self) -> None:
+        """MACD returns three lists of same length as input."""
+        closes = [float(i) for i in range(50)]
+        macd_line, signal_line, histogram = Indicators.macd(closes, fast=12, slow=26, signal=9)
+        assert len(macd_line) == 50
+        assert len(signal_line) == 50
+        assert len(histogram) == 50
+
+    def test_macd_early_values_are_nan(self) -> None:
+        """First slow+signal-2 values should be NaN."""
+        closes = [float(i) for i in range(50)]
+        macd_line, signal_line, histogram = Indicators.macd(closes, fast=12, slow=26, signal=9)
+        import math
+        assert math.isnan(macd_line[0])
+        assert math.isnan(signal_line[0])
+        assert math.isnan(histogram[0])
+
+    def test_macd_converging_prices(self) -> None:
+        """With constant prices, MACD should converge to zero."""
+        closes = [100.0] * 60
+        macd_line, signal_line, histogram = Indicators.macd(closes)
+        assert abs(macd_line[-1]) < 0.01
+        assert abs(signal_line[-1]) < 0.01
+        assert abs(histogram[-1]) < 0.01
+
+    def test_macd_uptrend_positive(self) -> None:
+        """In a steady uptrend, MACD line should be positive."""
+        closes = [100.0 + i * 0.5 for i in range(60)]
+        macd_line, signal_line, histogram = Indicators.macd(closes)
+        assert macd_line[-1] > 0
+
+
+# ===========================================================================
+# Volume Profile
+# ===========================================================================
+
+class TestVolumeProfileIndicator:
+    def _make_session_candles(self, prices_volumes: list[tuple[float, float, float, float, float]]) -> list[OHLCV]:
+        """Create candles from (open, high, low, close, volume) tuples."""
+        from datetime import datetime, timezone, timedelta
+        candles = []
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        for i, (o, h, l, c, v) in enumerate(prices_volumes):
+            candles.append(OHLCV(
+                timestamp=base + timedelta(minutes=i * 5),
+                open=o, high=h, low=l, close=c, volume=v,
+                symbol="TEST", timeframe="5m", market="stock",
+            ))
+        return candles
+
+    def test_poc_is_highest_volume_level(self) -> None:
+        candles = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (109, 111, 108, 110, 100),
+            (110, 112, 109, 111, 100),
+        ])
+        poc, vah, val = Indicators.volume_profile(candles, num_bins=20)
+        assert abs(poc - 100.0) < 2.0
+
+    def test_value_area_contains_70_pct(self) -> None:
+        candles = self._make_session_candles([
+            (99, 101, 98, 100, 5000),
+            (100, 102, 99, 101, 5000),
+            (100, 101, 99, 100, 5000),
+            (105, 107, 104, 106, 1000),
+            (110, 112, 109, 111, 500),
+        ])
+        poc, vah, val = Indicators.volume_profile(candles, num_bins=20)
+        assert val <= poc <= vah
+
+    def test_single_candle(self) -> None:
+        candles = self._make_session_candles([(100, 105, 95, 102, 1000)])
+        poc, vah, val = Indicators.volume_profile(candles, num_bins=10)
+        typical = (105 + 95 + 102) / 3
+        assert abs(poc - typical) < 2.0
+
+    def test_empty_candles(self) -> None:
+        poc, vah, val = Indicators.volume_profile([], num_bins=20)
+        assert poc == 0.0
+        assert vah == 0.0
+        assert val == 0.0
+
+
+class TestVWAPSlopeIndicator:
+    def test_flat_vwap_returns_near_zero(self) -> None:
+        vwap_values = [100.0] * 30
+        slope = Indicators.vwap_slope(vwap_values, lookback=20)
+        assert abs(slope) < 0.0001
+
+    def test_uptrending_vwap_positive_slope(self) -> None:
+        vwap_values = [100.0 + i * 0.1 for i in range(30)]
+        slope = Indicators.vwap_slope(vwap_values, lookback=20)
+        assert slope > 0
+
+    def test_downtrending_vwap_negative_slope(self) -> None:
+        vwap_values = [100.0 - i * 0.1 for i in range(30)]
+        slope = Indicators.vwap_slope(vwap_values, lookback=20)
+        assert slope < 0
+
+    def test_insufficient_data_returns_zero(self) -> None:
+        slope = Indicators.vwap_slope([100.0], lookback=20)
+        assert slope == 0.0
+
+    def test_normalization_across_price_levels(self) -> None:
+        low = [100.0 + i * 0.1 for i in range(30)]
+        high = [50000.0 + i * 50.0 for i in range(30)]
+        slope_low = Indicators.vwap_slope(low, lookback=20)
+        slope_high = Indicators.vwap_slope(high, lookback=20)
+        assert abs(slope_low - slope_high) < abs(slope_low) * 0.5
+
+
+from signals.vpoc_bounce import VPOCBounceSignal
+
+
+class TestVPOCBounce:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "num_bins": 20,
+            "proximity_pct": 0.002,
+            "bounce_candles": 2,
+            "min_poc_volume_pct": 0.15,
+            "stop_loss_pct": 0.01,
+            "rr_ratio": 2.0,
+        }
+
+    @pytest.fixture(autouse=True)
+    def _no_swing_block(self):
+        with patch.object(BaseSignal, "check_swing_bias", return_value=True):
+            yield
+
+    def _make_session_candles(self, data: list[tuple]) -> list[OHLCV]:
+        from datetime import datetime, timezone, timedelta
+        candles = []
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        for i, (o, h, l, c, v) in enumerate(data):
+            candles.append(OHLCV(
+                timestamp=base + timedelta(minutes=i * 5),
+                open=o, high=h, low=l, close=c, volume=v,
+                symbol="AAPL", timeframe="5m", market="stock",
+            ))
+        return candles
+
+    def test_long_bounce_off_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (99.5, 100.2, 99.3, 100.0, 5000),
+            (99.8, 100.5, 99.7, 100.3, 5000),
+        ])
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=100.1,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert result.triggered
+        assert result.direction == SignalDirection.LONG
+
+    def test_short_bounce_off_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (100, 101, 99, 100, 10000),
+            (100.5, 100.8, 99.9, 100.0, 5000),
+            (100.2, 100.4, 99.6, 99.8, 5000),
+        ])
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=99.9,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert result.triggered
+        assert result.direction == SignalDirection.SHORT
+
+    def test_no_trigger_price_far_from_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (99, 101, 98, 100, 10000),
+            (100, 102, 99, 101, 10000),
+            (100, 101, 99, 100, 10000),
+            (109, 111, 108, 110, 100),
+            (110, 112, 109, 111, 100),
+        ])
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=110.0,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert not result.triggered
+
+    def test_no_trigger_weak_poc(self, config: dict) -> None:
+        session = self._make_session_candles([
+            (95, 97, 94, 96, 1000),
+            (98, 100, 97, 99, 1000),
+            (101, 103, 100, 102, 1000),
+            (104, 106, 103, 105, 1000),
+            (107, 109, 106, 108, 1000),
+            (108, 109, 107, 108, 1000),
+            (108, 109, 107, 108, 1000),
+        ])
+        config["min_poc_volume_pct"] = 0.40
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=108.0,
+            session_candles=session, recent_candles=session[-2:],
+            market="stock",
+        )
+        assert not result.triggered
+
+    def test_disabled(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = VPOCBounceSignal(config)
+        result = sig.evaluate_from_profile(
+            symbol="AAPL", current_price=100.0,
+            session_candles=[], recent_candles=[],
+            market="stock",
+        )
+        assert not result.triggered
+
+
+class TestVPOCBounceSwingBias:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "num_bins": 20,
+            "proximity_pct": 0.002,
+            "bounce_candles": 2,
+            "min_poc_volume_pct": 0.15,
+            "stop_loss_pct": 0.01,
+            "rr_ratio": 2.0,
+        }
+
+    def test_blocked_by_swing_bias(self, config: dict) -> None:
+        from datetime import datetime, timezone, timedelta
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        session = [
+            OHLCV(timestamp=base + timedelta(minutes=i * 5),
+                   open=99+i*0.1, high=101, low=98, close=100, volume=10000,
+                   symbol="AAPL", timeframe="5m", market="stock")
+            for i in range(7)
+        ]
+        with patch("signals.vpoc_bounce.VPOCBounceSignal.check_swing_bias", return_value=True):
+            sig = VPOCBounceSignal(config)
+            result = sig.evaluate_from_profile(
+                symbol="AAPL", current_price=100.0,
+                session_candles=session, recent_candles=session[-2:],
+                market="stock",
+            )
+            assert not result.triggered
+
+
+class TestMACDDivergence:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "fast_period": 12,
+            "slow_period": 26,
+            "signal_period": 9,
+            "divergence_lookback": 30,
+            "min_swing_distance": 5,
+            "stop_loss_pct": 0.015,
+            "rr_ratio": 2.0,
+        }
+
+    @pytest.fixture(autouse=True)
+    def _no_swing_block(self):
+        with patch("signals.macd_divergence.MACDDivergenceSignal.check_swing_bias", return_value=True):
+            yield
+
+    def _make_candles(self, closes: list[float]) -> list[OHLCV]:
+        from datetime import datetime, timezone, timedelta
+        base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+        candles = []
+        for i, c in enumerate(closes):
+            candles.append(OHLCV(
+                timestamp=base + timedelta(minutes=i * 5),
+                open=c, high=c + 0.5, low=c - 0.5, close=c, volume=1000,
+                symbol="AAPL", timeframe="5m", market="stock",
+            ))
+        return candles
+
+    def test_bullish_divergence_with_cross(self, config: dict) -> None:
+        closes = [100.0 - i * 0.3 for i in range(35)]
+        closes.append(90.0)
+        closes += [91.0 + i * 0.1 for i in range(14)]
+        closes.append(88.0)
+        closes += [89.0, 89.5, 90.0, 90.5, 91.0, 91.5, 92.0, 93.0, 93.5, 94.0]
+        candles = self._make_candles(closes)
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=94.0, candles=candles, market="stock",
+        )
+        assert isinstance(result.triggered, bool)
+        assert result.strategy_name == "macd_divergence"
+
+    def test_no_trigger_without_cross(self, config: dict) -> None:
+        closes = [100.0 - i * 0.2 for i in range(60)]
+        candles = self._make_candles(closes)
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=closes[-1], candles=candles, market="stock",
+        )
+        assert not result.triggered
+
+    def test_no_trigger_insufficient_data(self, config: dict) -> None:
+        closes = [100.0] * 20
+        candles = self._make_candles(closes)
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=100.0, candles=candles, market="stock",
+        )
+        assert not result.triggered
+
+    def test_disabled(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = MACDDivergenceSignal(config)
+        result = sig.evaluate_from_macd(
+            symbol="AAPL", current_price=100.0, candles=[], market="stock",
+        )
+        assert not result.triggered
+
+    def test_returns_correct_strategy_name(self, config: dict) -> None:
+        sig = MACDDivergenceSignal(config)
+        assert sig.name == "macd_divergence"
+
+
+class TestMACDDivergenceSwingBias:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "fast_period": 12,
+            "slow_period": 26,
+            "signal_period": 9,
+            "divergence_lookback": 30,
+            "min_swing_distance": 5,
+            "stop_loss_pct": 0.015,
+            "rr_ratio": 2.0,
+        }
+
+    def test_blocked_by_swing_bias(self, config: dict) -> None:
+        with patch("signals.macd_divergence.MACDDivergenceSignal.check_swing_bias", return_value=True):
+            sig = MACDDivergenceSignal(config)
+            closes = [100.0] * 60
+            from datetime import datetime, timezone, timedelta
+            base = datetime(2026, 3, 29, 14, 0, tzinfo=timezone.utc)
+            candles = [
+                OHLCV(timestamp=base + timedelta(minutes=i * 5),
+                       open=c, high=c + 0.5, low=c - 0.5, close=c, volume=1000,
+                       symbol="AAPL", timeframe="5m", market="stock")
+                for i, c in enumerate(closes)
+            ]
+            result = sig.evaluate_from_macd(
+                symbol="AAPL", current_price=100.0, candles=candles, market="stock",
+            )
+            assert not result.triggered
+
+
+# ===========================================================================
+# Funding Rate Fade
+# ===========================================================================
+
+class TestFundingRate:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "threshold": 0.0001,
+            "extreme_threshold": 0.0005,
+            "stop_loss_pct": 0.015,
+        }
+
+    @pytest.fixture(autouse=True)
+    def mock_swing_advisor(self):
+        with patch(
+            "signals.funding_rate.FundingRateSignal.check_swing_bias",
+            return_value=True,
+        ):
+            yield
+
+    def test_positive_funding_triggers_short(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.0003, 50000.0)
+        assert result.triggered
+        assert result.direction == SignalDirection.SHORT
+        assert result.stop_loss > result.entry_price
+        assert result.take_profit < result.entry_price
+
+    def test_negative_funding_triggers_long(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", -0.0003, 50000.0)
+        assert result.triggered
+        assert result.direction == SignalDirection.LONG
+        assert result.stop_loss < result.entry_price
+        assert result.take_profit > result.entry_price
+
+    def test_neutral_funding_no_signal(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.00005, 50000.0)
+        assert not result.triggered
+
+    def test_disabled_no_signal(self, config: dict) -> None:
+        config["enabled"] = False
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.001, 50000.0)
+        assert not result.triggered
+
+    def test_extreme_confidence(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.001, 50000.0)
+        assert result.confidence == 0.70
+
+    def test_moderate_confidence(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate_from_funding("BTC/USDT", 0.0002, 50000.0)
+        assert 0.50 < result.confidence < 0.70
+
+    def test_strategy_name(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        assert sig.name == "funding_rate"
+
+    def test_generic_evaluate_returns_no_signal(self, config: dict) -> None:
+        sig = FundingRateSignal(config)
+        result = sig.evaluate("BTC/USDT", [], 50000.0, "crypto")
+        assert not result.triggered
+
+
+class TestFundingRateSwingBias:
+    @pytest.fixture
+    def config(self) -> dict:
+        return {
+            "enabled": True,
+            "threshold": 0.0001,
+            "extreme_threshold": 0.0005,
+            "stop_loss_pct": 0.015,
+        }
+
+    def test_blocked_by_swing_bias(self, config: dict) -> None:
+        with patch(
+            "signals.funding_rate.FundingRateSignal.check_swing_bias",
+            return_value=False,
+        ):
+            sig = FundingRateSignal(config)
+            result = sig.evaluate_from_funding("BTC/USDT", 0.001, 50000.0)
+            assert not result.triggered
+            assert "swing bias" in result.reason.lower()

@@ -1,15 +1,9 @@
 {
-  "week_start": "2026-03-23",
-  "generated_at": "2026-03-23T10:00:14.090496+00:00",
+  "week_start": "2026-05-04",
+  "generated_at": "2026-05-04T10:00:10.122340+00:00",
   "biases": {
     "AAPL": {
       "symbol": "AAPL",
-      "bias": "neutral",
-      "confidence": 0,
-      "reason": "Unable to determine bias \u2014 defaulting to neutral."
-    },
-    "TSLA": {
-      "symbol": "TSLA",
       "bias": "neutral",
       "confidence": 0,
       "reason": "Unable to determine bias \u2014 defaulting to neutral."
@@ -32,14 +26,20 @@
       "confidence": 0,
       "reason": "Unable to determine bias \u2014 defaulting to neutral."
     },
-    "BTC/USDT": {
-      "symbol": "BTC/USDT",
+    "MSFT": {
+      "symbol": "MSFT",
       "bias": "neutral",
       "confidence": 0,
       "reason": "Unable to determine bias \u2014 defaulting to neutral."
     },
-    "BTC/USDC": {
-      "symbol": "BTC/USDC",
+    "GOOGL": {
+      "symbol": "GOOGL",
+      "bias": "neutral",
+      "confidence": 0,
+      "reason": "Unable to determine bias \u2014 defaulting to neutral."
+    },
+    "BTC/USDT": {
+      "symbol": "BTC/USDT",
       "bias": "neutral",
       "confidence": 0,
       "reason": "Unable to determine bias \u2014 defaulting to neutral."
@@ -50,20 +50,8 @@
       "confidence": 0,
       "reason": "Unable to determine bias \u2014 defaulting to neutral."
     },
-    "ETH/USDC": {
-      "symbol": "ETH/USDC",
-      "bias": "neutral",
-      "confidence": 0,
-      "reason": "Unable to determine bias \u2014 defaulting to neutral."
-    },
     "SOL/USDT": {
       "symbol": "SOL/USDT",
-      "bias": "neutral",
-      "confidence": 0,
-      "reason": "Unable to determine bias \u2014 defaulting to neutral."
-    },
-    "SOL/USDC": {
-      "symbol": "SOL/USDC",
       "bias": "neutral",
       "confidence": 0,
       "reason": "Unable to determine bias \u2014 defaulting to neutral."

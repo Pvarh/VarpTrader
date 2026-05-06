@@ -12,7 +12,7 @@
             theme: {
                 extend: {
                     colors: {
-                        dark: { 900: '#0b0d11', 800: '#13161d', 700: '#1a1e28', 600: '#1e2230' },
+                        dark: { 900: '#0b0d11', 800: '#13161d', 700: '#1a1e28', 600: '#1e2230', 500: '#252a38' },
                     }
                 }
             }
@@ -21,6 +21,9 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="bg-dark-900 text-gray-300 min-h-screen antialiased">
+
+<!-- Toast Container -->
+<div id="toastContainer" class="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm"></div>
 
 <!-- Navigation -->
 <nav class="bg-dark-800 border-b border-dark-600 px-5 flex items-center justify-between h-12">
@@ -41,11 +44,39 @@
 </nav>
 
 <!-- Page Content -->
-<main class="max-w-[1280px] mx-auto">
+<main class="max-w-[1400px] mx-auto">
     {% block content %}{% endblock %}
 </main>
 
-<!-- Base WebSocket for connection status indicator -->
+<!-- Toast System -->
+<script>
+function showToast(message, type) {
+    var container = document.getElementById('toastContainer');
+    var toast = document.createElement('div');
+    var colors = {
+        success: 'bg-green-500/20 border-green-500/50 text-green-400',
+        error: 'bg-red-500/20 border-red-500/50 text-red-400',
+        info: 'bg-blue-500/20 border-blue-500/50 text-blue-400',
+        warning: 'bg-yellow-500/20 border-yellow-500/50 text-yellow-400',
+    };
+    toast.className = 'px-4 py-3 rounded-lg border text-sm font-medium backdrop-blur-sm transition-all duration-300 ' + (colors[type] || colors.info);
+    toast.textContent = message;
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(20px)';
+    container.appendChild(toast);
+    requestAnimationFrame(function() {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateX(0)';
+    });
+    setTimeout(function() {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(20px)';
+        setTimeout(function() { toast.remove(); }, 300);
+    }, 4000);
+}
+</script>
+
+<!-- Base WebSocket -->
 <script>
 (function() {
     var statusEl = document.getElementById('wsStatus');

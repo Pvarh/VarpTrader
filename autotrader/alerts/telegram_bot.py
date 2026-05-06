@@ -320,6 +320,101 @@ class TelegramAlert:
         return self.send_message(text, parse_mode="")
 
     # ------------------------------------------------------------------
+    # Inline keyboard (approval flow)
+    # ------------------------------------------------------------------
+    def send_message_with_buttons(
+        self,
+        text: str,
+        buttons: list[list[dict[str, str]]],
+        parse_mode: str = "",
+    ) -> dict | None:
+        """Send a message with inline keyboard buttons.
+
+        Parameters
+        ----------
+        text:
+            Message body.
+        buttons:
+            Nested list of button rows.  Each button is a dict with
+            ``"text"`` and ``"callback_data"`` keys.
+        parse_mode:
+            Telegram parse mode.
+
+        Returns
+        -------
+        dict | None
+            The sent message object on success, or ``None`` on failure.
+        """
+        url = f"{self._base_url}/sendMessage"
+        payload: dict[str, Any] = {
+            "chat_id": self._chat_id,
+            "text": text,
+            "reply_markup": {"inline_keyboard": buttons},
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(url, json=payload)
+                response.raise_for_status()
+
+            data = response.json()
+            if not data.get("ok"):
+                logger.warning(
+                    "telegram_send_buttons_not_ok | description={desc}",
+                    desc=data.get("description"),
+                )
+                return None
+
+            return data.get("result")
+        except Exception:
+            logger.exception("telegram_send_buttons_error")
+            return None
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> bool:
+        """Acknowledge a Telegram callback query (dismiss button spinner)."""
+        url = f"{self._base_url}/answerCallbackQuery"
+        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(url, json=payload)
+                response.raise_for_status()
+            return True
+        except Exception:
+            logger.exception("telegram_answer_callback_error")
+            return False
+
+    def edit_message_text(
+        self,
+        chat_id: str,
+        message_id: int,
+        text: str,
+        parse_mode: str = "",
+    ) -> bool:
+        """Edit an existing message (e.g. to remove inline buttons after action)."""
+        url = f"{self._base_url}/editMessageText"
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+        }
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(url, json=payload)
+                response.raise_for_status()
+            return True
+        except Exception:
+            logger.exception("telegram_edit_message_error")
+            return False
+
+    # ------------------------------------------------------------------
     # Incoming commands (polling)
     # ------------------------------------------------------------------
     def get_updates(self) -> list[dict]:

@@ -107,15 +107,15 @@ class OnChainWhaleDetector:
         lookback_seconds = 600  # 10 minutes
         start_ts = int(time.time()) - lookback_seconds
 
-        url = (
-            f"{self._WHALE_ALERT_BASE}/transactions"
-            f"?min_value={int(self._min_usd)}"
-            f"&api_key={self._api_key}"
-            f"&start={start_ts}"
-        )
+        url = f"{self._WHALE_ALERT_BASE}/transactions"
+        params = {
+            "min_value": int(self._min_usd),
+            "api_key": self._api_key,
+            "start": start_ts,
+        }
 
         try:
-            response = requests.get(url, timeout=15)
+            response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             data: dict[str, Any] = response.json()
 
@@ -220,10 +220,16 @@ class OnChainWhaleDetector:
                         tx_hash=tx_hash,
                     )
 
-        except requests.RequestException:
-            logger.exception("whale_alert_poll_request_error")
-        except Exception:
-            logger.exception("whale_alert_poll_error")
+        except requests.RequestException as exc:
+            logger.error(
+                "whale_alert_poll_request_error | error={error}",
+                error=str(exc).replace(self._api_key, "***"),
+            )
+        except Exception as exc:
+            logger.error(
+                "whale_alert_poll_error | error={error}",
+                error=str(exc).replace(self._api_key, "***"),
+            )
 
     # ------------------------------------------------------------------
     # Signal queries

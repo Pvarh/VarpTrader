@@ -1,118 +1,138 @@
 {% extends "base.html" %}
 {% set active_page = "analysis" %}
 
-{% block title %}Analysis - AutoTrader Dashboard{% endblock %}
+{% block title %}Analysis - VarpTrader{% endblock %}
 
 {% block content %}
-<div class="content">
-    <!-- Latest Analysis Run -->
-    <div class="section">
-        <div class="section-header">Latest Analysis Run</div>
-        <div class="section-body">
-            {% if latest_run %}
-            <div class="analysis-details">
-                <div class="status-bar" style="padding: 0;">
-                    <div class="status-card">
-                        <div class="label">Run ID</div>
-                        <div class="value">#{{ latest_run.id }}</div>
-                    </div>
-                    <div class="status-card">
-                        <div class="label">Timestamp</div>
-                        <div class="value" style="font-size: 1rem;">{{ latest_run.run_timestamp[:19] }}</div>
-                    </div>
-                    <div class="status-card">
-                        <div class="label">Trades Analyzed</div>
-                        <div class="value">{{ latest_run.trades_analyzed }}</div>
-                    </div>
-                    <div class="status-card">
-                        <div class="label">Approved</div>
-                        <div class="value {% if latest_run.approved %}pnl-positive{% else %}pnl-negative{% endif %}">
-                            {% if latest_run.approved %}Yes{% else %}No{% endif %}
-                        </div>
+<!-- Latest Analysis Run -->
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="flex items-center justify-between px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Latest Analysis Run</span>
+        </div>
+        {% if latest_run %}
+        <div class="p-4">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div class="bg-dark-900 rounded p-3">
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Run ID</div>
+                    <div class="text-lg font-bold text-white font-mono">#{{ latest_run.id }}</div>
+                </div>
+                <div class="bg-dark-900 rounded p-3">
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Timestamp</div>
+                    <div class="text-sm font-medium text-gray-300 font-mono">{{ latest_run.run_timestamp[:19] }}</div>
+                </div>
+                <div class="bg-dark-900 rounded p-3">
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Trades Analyzed</div>
+                    <div class="text-lg font-bold text-white">{{ latest_run.trades_analyzed }}</div>
+                </div>
+                <div class="bg-dark-900 rounded p-3">
+                    <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Approved</div>
+                    <div class="text-lg font-bold {% if latest_run.approved %}text-green-400{% else %}text-red-400{% endif %}">
+                        {% if latest_run.approved %}Yes{% else %}No{% endif %}
                     </div>
                 </div>
-                {% if latest_run.report_markdown %}
-                <div class="report-content">
-                    <h4 style="margin-bottom: 10px; color: var(--text-secondary);">Report</h4>
-                    <pre class="report-text">{{ latest_run.report_markdown }}</pre>
-                </div>
-                {% endif %}
-                {% if latest_run.config_changes_json %}
-                <div class="report-content" style="margin-top: 16px;">
-                    <h4 style="margin-bottom: 10px; color: var(--text-secondary);">Proposed Config Changes</h4>
-                    <pre class="report-text">{{ latest_run.config_changes_json }}</pre>
-                </div>
-                {% endif %}
             </div>
-            {% else %}
-            <p class="loading-text">No analysis runs found</p>
+            {% if latest_run.report_markdown %}
+            <div class="mt-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Report</div>
+                <pre class="bg-dark-900 rounded p-3 text-xs text-gray-400 whitespace-pre-wrap overflow-x-auto max-h-96 overflow-y-auto font-mono leading-relaxed">{{ latest_run.report_markdown }}</pre>
+            </div>
+            {% endif %}
+            {% if latest_run.config_changes_json %}
+            <div class="mt-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Proposed Config Changes</div>
+                <pre class="bg-dark-900 rounded p-3 text-xs text-gray-400 whitespace-pre-wrap overflow-x-auto font-mono leading-relaxed">{{ latest_run.config_changes_json }}</pre>
+            </div>
             {% endif %}
         </div>
+        {% else %}
+        <div class="p-8 text-center text-gray-600 text-sm">No analysis runs found</div>
+        {% endif %}
     </div>
+</div>
 
-    <!-- Weekly Bias Table -->
-    <div class="section">
-        <div class="section-header">Weekly Bias</div>
-        <div class="section-body">
+<!-- Weekly Bias -->
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="flex items-center justify-between px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Weekly Bias</span>
             {% if weekly_bias.biases %}
-            <div style="margin-bottom: 12px; color: var(--text-secondary); font-size: 0.85rem;">
-                Week: {{ weekly_bias.week_start or 'N/A' }} | Generated: {{ weekly_bias.generated_at or 'N/A' }}
-            </div>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Symbol</th>
-                            <th>Bias</th>
-                            <th>Confidence</th>
-                            <th>Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for symbol, info in weekly_bias.biases.items() %}
-                        <tr>
-                            <td><strong>{{ symbol }}</strong></td>
-                            <td>
-                                <span class="badge {% if info.bias == 'bullish' %}badge-long{% elif info.bias == 'bearish' %}badge-short{% else %}badge-breakeven{% endif %}">
-                                    {{ info.bias }}
-                                </span>
-                            </td>
-                            <td>{{ info.confidence }}%</td>
-                            <td>{{ info.reason or '--' }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="loading-text">No weekly bias data available</p>
+            <span class="text-[10px] text-gray-600">Week: {{ weekly_bias.week_start or 'N/A' }} | Generated: {{ weekly_bias.generated_at or 'N/A' }}</span>
             {% endif %}
         </div>
+        {% if weekly_bias.biases %}
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="border-b border-dark-600 text-[10px] text-gray-500 uppercase tracking-wider">
+                        <th class="text-left px-4 py-2.5 font-medium">Symbol</th>
+                        <th class="text-left px-4 py-2.5 font-medium">Bias</th>
+                        <th class="text-left px-4 py-2.5 font-medium">Confidence</th>
+                        <th class="text-left px-4 py-2.5 font-medium">Reason</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-dark-700">
+                    {% for symbol, info in weekly_bias.biases.items() %}
+                    <tr class="hover:bg-dark-700/50 transition-colors">
+                        <td class="px-4 py-2.5 text-white font-semibold">{{ symbol }}</td>
+                        <td class="px-4 py-2.5">
+                            <span class="px-1.5 py-0.5 rounded text-[10px] font-medium uppercase
+                                {% if info.bias == 'bullish' %}bg-green-500/15 text-green-400
+                                {% elif info.bias == 'bearish' %}bg-red-500/15 text-red-400
+                                {% else %}bg-gray-500/15 text-gray-400{% endif %}">
+                                {{ info.bias }}
+                            </span>
+                        </td>
+                        <td class="px-4 py-2.5 text-gray-300 font-mono">{{ info.confidence }}%</td>
+                        <td class="px-4 py-2.5 text-gray-500">{{ info.reason or '--' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="p-8 text-center text-gray-600 text-sm">No weekly bias data available</div>
+        {% endif %}
     </div>
+</div>
 
-    <!-- Strategy Win Rates Chart -->
-    <div class="section">
-        <div class="section-header">Strategy Win Rates (30 Days)</div>
-        <div class="section-body">
-            <div class="chart-container">
+<!-- Two-column: Win Rate Chart + Whale Correlation -->
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 p-4">
+    <!-- Win Rate Chart -->
+    <div class="lg:col-span-2 bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Strategy Win Rates (30 Days)</span>
+        </div>
+        <div class="p-4">
+            <div class="h-64">
                 <canvas id="winRateChart"></canvas>
             </div>
         </div>
     </div>
 
     <!-- Whale Correlation -->
-    <div class="section">
-        <div class="section-header">Whale Signal Correlation</div>
-        <div class="section-body">
-            <div class="whale-grid">
-                <div class="whale-card">
-                    <div class="wlabel">Win Rate WITH Whale Signal</div>
-                    <div class="wvalue pnl-positive">{{ "%.1f"|format(whale_correlation.with_whale * 100) }}%</div>
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Whale Signal Correlation</span>
+        </div>
+        <div class="p-4 flex flex-col gap-4">
+            <div class="bg-dark-900 rounded p-4 text-center">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">With Whale Signal</div>
+                <div class="text-3xl font-bold text-green-400">{{ "%.1f"|format(whale_correlation.with_whale * 100) }}%</div>
+                <div class="text-[10px] text-gray-600 mt-1">win rate</div>
+            </div>
+            <div class="bg-dark-900 rounded p-4 text-center">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Without Whale Signal</div>
+                <div class="text-3xl font-bold text-gray-400">{{ "%.1f"|format(whale_correlation.without_whale * 100) }}%</div>
+                <div class="text-[10px] text-gray-600 mt-1">win rate</div>
+            </div>
+            <div class="bg-dark-900 rounded p-4 text-center">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Edge</div>
+                {% set edge = (whale_correlation.with_whale - whale_correlation.without_whale) * 100 %}
+                <div class="text-3xl font-bold {% if edge > 0 %}text-green-400{% elif edge < 0 %}text-red-400{% else %}text-gray-500{% endif %}">
+                    {% if edge >= 0 %}+{% endif %}{{ "%.1f"|format(edge) }}%
                 </div>
-                <div class="whale-card">
-                    <div class="wlabel">Win Rate WITHOUT Whale Signal</div>
-                    <div class="wvalue">{{ "%.1f"|format(whale_correlation.without_whale * 100) }}%</div>
-                </div>
+                <div class="text-[10px] text-gray-600 mt-1">whale advantage</div>
             </div>
         </div>
     </div>
@@ -121,18 +141,18 @@
 
 {% block scripts %}
 <script>
-    const winRates = {{ win_rates|safe }};
+    var winRates = {{ win_rates|safe }};
 
     document.addEventListener('DOMContentLoaded', function() {
-        const strategies = Object.keys(winRates);
-        const rates = strategies.map(s => ((winRates[s] || 0) * 100).toFixed(1));
+        var strategies = Object.keys(winRates);
+        var rates = strategies.map(function(s) { return ((winRates[s] || 0) * 100).toFixed(1); });
 
         if (strategies.length === 0) return;
 
-        const barColors = rates.map(v => parseFloat(v) >= 50 ? 'rgba(0,200,83,0.75)' : 'rgba(255,23,68,0.75)');
-        const borderColors = rates.map(v => parseFloat(v) >= 50 ? '#00c853' : '#ff1744');
+        var barColors = rates.map(function(v) { return parseFloat(v) >= 50 ? 'rgba(74,222,128,0.6)' : 'rgba(248,113,113,0.6)'; });
+        var borderColors = rates.map(function(v) { return parseFloat(v) >= 50 ? '#4ade80' : '#f87171'; });
 
-        const ctx = document.getElementById('winRateChart').getContext('2d');
+        var ctx = document.getElementById('winRateChart').getContext('2d');
         new Chart(ctx, {
             type: 'bar',
             data: {
@@ -152,6 +172,11 @@
                 plugins: {
                     legend: { display: false },
                     tooltip: {
+                        backgroundColor: '#1a1e28',
+                        titleColor: '#e5e7eb',
+                        bodyColor: '#9ca3af',
+                        borderColor: '#252a38',
+                        borderWidth: 1,
                         callbacks: {
                             label: function(ctx) { return ctx.parsed.y + '%'; }
                         }
@@ -161,12 +186,12 @@
                     y: {
                         beginAtZero: true,
                         max: 100,
-                        grid: { color: 'rgba(45,49,72,0.5)' },
-                        ticks: { color: '#8b8fa3', callback: v => v + '%' }
+                        grid: { color: 'rgba(37,42,56,0.8)' },
+                        ticks: { color: '#6b7280', callback: function(v) { return v + '%'; } }
                     },
                     x: {
                         grid: { display: false },
-                        ticks: { color: '#8b8fa3', font: { size: 11 } }
+                        ticks: { color: '#6b7280', font: { size: 10 } }
                     }
                 }
             }

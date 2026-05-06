@@ -84,7 +84,7 @@
       "rr_ratio": 3.0
     },
     "funding_rate": {
-      "enabled": true,
+      "enabled": false,
       "threshold": 0.0003,
       "extreme_threshold": 0.001,
       "stop_loss_pct": 0.012,
@@ -191,7 +191,7 @@
     "public_url": "http://162.55.50.28:8000"
   },
   "regime": {
-    "adx_threshold": 20.0
+    "adx_threshold": 15.0
   },
   "polymarket": {
     "block_short_threshold": 0.65
@@ -205,6 +205,15 @@
   },
   "symbol_size_multipliers": {
     "MSFT": 0.5,
-    "GOOGL": 0.5
+    "GOOGL": 0.5,
+    "NVDA": 0.25,
+    "SPY": 0.5,
+    "QQQ": 0.5,
+    "ETH/USDT": 0.5,
+    "SOL/USDT": 0.5,
+    "BTC/USDT": 0.75,
+    "ETH/USDC": 0.5,
+    "SOL/USDC": 0.5,
+    "BTC/USDC": 0.75
   }
 }

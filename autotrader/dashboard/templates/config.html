@@ -1,258 +1,290 @@
 {% extends "base.html" %}
 {% set active_page = "config" %}
 
-{% block title %}Config - AutoTrader Dashboard{% endblock %}
+{% block title %}Config - VarpTrader{% endblock %}
 
 {% block content %}
-<div class="content">
-    <!-- Pending AI Changes -->
-    {% if not auto_apply and pending_changes %}
-    <div class="section" style="border-color: var(--yellow);">
-        <div class="section-header" style="color: var(--yellow);">Pending AI Config Changes</div>
-        <div class="section-body">
+<!-- Pending AI Changes -->
+{% if not auto_apply and pending_changes %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-yellow-500/50 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-yellow-500/30">
+            <span class="text-[10px] text-yellow-400 uppercase tracking-wider font-medium">Pending AI Config Changes</span>
+        </div>
+        <div class="p-4 flex flex-col gap-3">
             {% for change in pending_changes %}
-            <div class="pending-change-card">
-                <div class="pending-header">
-                    <span>Run #{{ change.id }} - {{ change.run_timestamp[:19] }}</span>
-                    <span>Trades Analyzed: {{ change.trades_analyzed }}</span>
+            <div class="bg-dark-900 rounded-lg p-4 border border-dark-600">
+                <div class="flex items-center justify-between mb-3">
+                    <span class="text-xs text-gray-300 font-medium">Run #{{ change.id }} - {{ change.run_timestamp[:19] }}</span>
+                    <span class="text-[10px] text-gray-500">{{ change.trades_analyzed }} trades analyzed</span>
                 </div>
                 {% if change.config_changes_json %}
-                <pre class="report-text">{{ change.config_changes_json }}</pre>
+                <pre class="bg-dark-800 rounded p-3 text-xs text-gray-400 whitespace-pre-wrap font-mono mb-3 leading-relaxed">{{ change.config_changes_json }}</pre>
                 {% endif %}
-                <div style="margin-top: 12px;">
-                    <button class="btn btn-primary" onclick="approveChange({{ change.id }})">
-                        Approve Changes
-                    </button>
+                <button class="bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-4 py-1.5 rounded transition-colors"
+                    onclick="approveChange({{ change.id }})">
+                    Approve Changes
+                </button>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% elif not auto_apply %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Pending AI Config Changes</span>
+        </div>
+        <div class="p-6 text-center text-gray-600 text-sm">
+            No pending changes. <span class="text-gray-500">auto_apply_changes = {{ auto_apply }}</span>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Watchlist -->
+{% if config.watchlist %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Watchlist</span>
+        </div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+            {% if config.watchlist.stocks %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Stocks</div>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for s in config.watchlist.stocks %}
+                    <span class="bg-dark-700 text-gray-300 text-xs px-2 py-0.5 rounded font-mono">{{ s }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+            {% if config.watchlist.crypto %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-2">Crypto</div>
+                <div class="flex flex-wrap gap-1.5">
+                    {% for c in config.watchlist.crypto %}
+                    <span class="bg-dark-700 text-gray-300 text-xs px-2 py-0.5 rounded font-mono">{{ c }}</span>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Strategies -->
+{% if config.strategies %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Strategies</span>
+        </div>
+        <div class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {% for name, settings in config.strategies.items() %}
+            <div class="bg-dark-900 rounded-lg p-3 border {% if settings.enabled %}border-dark-600{% else %}border-dark-700 opacity-60{% endif %}">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm text-white font-medium">{{ name }}</span>
+                    <span class="px-1.5 py-0.5 rounded text-[10px] font-medium
+                        {% if settings.enabled %}bg-green-500/15 text-green-400{% else %}bg-red-500/15 text-red-400{% endif %}">
+                        {% if settings.enabled %}ON{% else %}OFF{% endif %}
+                    </span>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                    {% for key, val in settings.items() %}
+                        {% if key != 'enabled' %}
+                        <div class="flex items-center justify-between text-[11px]">
+                            <span class="text-gray-500">{{ key }}</span>
+                            <span class="text-gray-300 font-mono">{{ val }}</span>
+                        </div>
+                        {% endif %}
+                    {% endfor %}
                 </div>
             </div>
             {% endfor %}
         </div>
     </div>
-    {% elif not auto_apply %}
-    <div class="section">
-        <div class="section-header">Pending AI Config Changes</div>
-        <div class="section-body">
-            <p class="loading-text">No pending changes. auto_apply_changes is set to <strong>{{ auto_apply }}</strong>.</p>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Watchlist -->
-    {% if config.watchlist %}
-    <div class="section">
-        <div class="section-header">Watchlist</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% if config.watchlist.stocks %}
-                <div class="config-item">
-                    <div class="cparam">Stocks</div>
-                    <div class="cvalue" style="font-size: 0.9rem;">{{ config.watchlist.stocks | join(', ') }}</div>
-                </div>
-                {% endif %}
-                {% if config.watchlist.crypto %}
-                <div class="config-item">
-                    <div class="cparam">Crypto</div>
-                    <div class="cvalue" style="font-size: 0.9rem;">{{ config.watchlist.crypto | join(', ') }}</div>
-                </div>
-                {% endif %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Strategies -->
-    {% if config.strategies %}
-    <div class="section">
-        <div class="section-header">Strategies</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for name, settings in config.strategies.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ name }}</div>
-                    <div class="cvalue">
-                        <span class="badge {% if settings.enabled %}badge-win{% else %}badge-loss{% endif %}">
-                            {% if settings.enabled %}Enabled{% else %}Disabled{% endif %}
-                        </span>
-                    </div>
-                    <div class="config-details">
-                        {% for key, val in settings.items() %}
-                            {% if key != 'enabled' %}
-                            <div class="config-detail-row">
-                                <span class="config-detail-key">{{ key }}:</span>
-                                <span class="config-detail-val">{{ val }}</span>
-                            </div>
-                            {% endif %}
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Risk Management -->
-    {% if config.risk %}
-    <div class="section">
-        <div class="section-header">Risk Management</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for key, val in config.risk.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ key }}</div>
-                    <div class="cvalue">{{ val }}</div>
-                    {% if config.bounds and key in config.bounds %}
-                    <div class="cbounds">Bounds: {{ config.bounds[key].min }} - {{ config.bounds[key].max }}</div>
-                    {% endif %}
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Bounds -->
-    {% if config.bounds %}
-    <div class="section">
-        <div class="section-header">Parameter Bounds</div>
-        <div class="section-body">
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Parameter</th>
-                            <th>Min</th>
-                            <th>Max</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for param, bounds in config.bounds.items() %}
-                        <tr>
-                            <td><strong>{{ param }}</strong></td>
-                            <td>{{ bounds.min }}</td>
-                            <td>{{ bounds.max }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Whale Config -->
-    {% if config.whale %}
-    <div class="section">
-        <div class="section-header">Whale Detection</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for key, val in config.whale.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ key }}</div>
-                    <div class="cvalue">{{ val }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Swing Advisor -->
-    {% if config.swing_advisor %}
-    <div class="section">
-        <div class="section-header">Swing Advisor</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for key, val in config.swing_advisor.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ key }}</div>
-                    <div class="cvalue">{{ val }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Analysis Config -->
-    {% if config.analysis %}
-    <div class="section">
-        <div class="section-header">Analysis Settings</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for key, val in config.analysis.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ key }}</div>
-                    <div class="cvalue">{{ val }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Go-Live Thresholds -->
-    {% if config.go_live_thresholds %}
-    <div class="section">
-        <div class="section-header">Go-Live Thresholds</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for key, val in config.go_live_thresholds.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ key }}</div>
-                    <div class="cvalue">{{ val }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
-
-    <!-- Dashboard Config -->
-    {% if config.dashboard %}
-    <div class="section">
-        <div class="section-header">Dashboard Settings</div>
-        <div class="section-body">
-            <div class="config-grid">
-                {% for key, val in config.dashboard.items() %}
-                <div class="config-item">
-                    <div class="cparam">{{ key }}</div>
-                    <div class="cvalue">{{ val }}</div>
-                </div>
-                {% endfor %}
-            </div>
-        </div>
-    </div>
-    {% endif %}
 </div>
+{% endif %}
+
+<!-- Risk Management -->
+{% if config.risk %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Risk Management</span>
+        </div>
+        <div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {% for key, val in config.risk.items() %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{{ key }}</div>
+                <div class="text-sm text-white font-bold font-mono">{{ val }}</div>
+                {% if config.bounds and key in config.bounds %}
+                <div class="text-[10px] text-gray-600 mt-1">bounds: {{ config.bounds[key].min }} - {{ config.bounds[key].max }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Bounds Table -->
+{% if config.bounds %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Parameter Bounds</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-xs">
+                <thead>
+                    <tr class="border-b border-dark-600 text-[10px] text-gray-500 uppercase tracking-wider">
+                        <th class="text-left px-4 py-2.5 font-medium">Parameter</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Min</th>
+                        <th class="text-right px-4 py-2.5 font-medium">Max</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-dark-700">
+                    {% for param, bounds in config.bounds.items() %}
+                    <tr class="hover:bg-dark-700/50 transition-colors">
+                        <td class="px-4 py-2 text-white font-medium">{{ param }}</td>
+                        <td class="px-4 py-2 text-right font-mono text-gray-300">{{ bounds.min }}</td>
+                        <td class="px-4 py-2 text-right font-mono text-gray-300">{{ bounds.max }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Whale Config -->
+{% if config.whale %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Whale Detection</span>
+        </div>
+        <div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {% for key, val in config.whale.items() %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{{ key }}</div>
+                <div class="text-sm text-white font-bold font-mono">{{ val }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Swing Advisor -->
+{% if config.swing_advisor %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Swing Advisor</span>
+        </div>
+        <div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {% for key, val in config.swing_advisor.items() %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{{ key }}</div>
+                <div class="text-sm text-white font-bold font-mono">{{ val }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Analysis Config -->
+{% if config.analysis %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Analysis Settings</span>
+        </div>
+        <div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {% for key, val in config.analysis.items() %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{{ key }}</div>
+                <div class="text-sm text-white font-bold font-mono">{{ val }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Go-Live Thresholds -->
+{% if config.go_live_thresholds %}
+<div class="p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Go-Live Thresholds</span>
+        </div>
+        <div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {% for key, val in config.go_live_thresholds.items() %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{{ key }}</div>
+                <div class="text-sm text-white font-bold font-mono">{{ val }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
+<!-- Dashboard Settings -->
+{% if config.dashboard %}
+<div class="p-4">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg">
+        <div class="px-4 py-2.5 border-b border-dark-600">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Dashboard Settings</span>
+        </div>
+        <div class="p-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {% for key, val in config.dashboard.items() %}
+            <div class="bg-dark-900 rounded p-3">
+                <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{{ key }}</div>
+                <div class="text-sm text-white font-bold font-mono">{{ val }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
 <script>
-    async function approveChange(runId) {
-        const apiKey = prompt('Enter Dashboard API Key:');
+    function approveChange(runId) {
+        var apiKey = prompt('Enter Dashboard API Key:');
         if (!apiKey) return;
 
-        try {
-            const resp = await fetch('/config/approve/' + runId, {
-                method: 'POST',
-                headers: {
-                    'X-API-Key': apiKey,
-                    'Content-Type': 'application/json'
+        fetch('/config/approve/' + runId, {
+            method: 'POST',
+            headers: {
+                'X-API-Key': apiKey,
+                'Content-Type': 'application/json'
+            }
+        })
+        .then(function(resp) {
+            return resp.json().then(function(data) {
+                if (resp.ok) {
+                    showToast('Changes approved for run #' + runId, 'success');
+                    setTimeout(function() { window.location.reload(); }, 1500);
+                } else {
+                    showToast('Error: ' + (data.detail || 'Unknown error'), 'error');
                 }
             });
-
-            const data = await resp.json();
-
-            if (resp.ok) {
-                alert('Changes approved successfully for run #' + runId);
-                window.location.reload();
-            } else {
-                alert('Error: ' + (data.detail || 'Unknown error'));
-            }
-        } catch (e) {
-            alert('Request failed: ' + e.message);
-        }
+        })
+        .catch(function(e) {
+            showToast('Request failed: ' + e.message, 'error');
+        });
     }
 </script>
 {% endblock %}

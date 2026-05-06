@@ -738,6 +738,9 @@ class AutoTrader:
 
         # -- Regime detection & session bias (use 1h candles) ----------------
         regime = self.regime_detector.detect(candles_1h or candles_5m)
+        if not hasattr(self, "_last_regime_by_symbol"):
+            self._last_regime_by_symbol = {}
+        self._last_regime_by_symbol[symbol.upper()] = regime
         bias_state = self._session_bias_state(symbol)
         if candles_1h and len(candles_1h) >= 50:
             if self._session_bias_enabled():
@@ -759,8 +762,9 @@ class AutoTrader:
             if not self._strategy_allowed_for_market(sig.name, "stock"):
                 continue
             try:
+                market = "stock"
                 result = self._run_signal(
-                    sig, symbol, candles_5m, current_price, "stock",
+                    sig, symbol, candles_5m, current_price, market,
                     first_candle, avg_volume, candles_1h=candles_1h,
                 )
                 if not result.triggered:
@@ -794,10 +798,10 @@ class AutoTrader:
                             continue
 
                 # -- Trend filter gate --------------------------------------
-                if not self._regime_allows(sig.name, result.direction, regime):
+                if not self._regime_allows(sig.name, result.direction, regime, market=market):
                     logger.info(
-                        "regime_blocked | symbol={} strategy={} direction={} regime={}",
-                        symbol, sig.name, result.direction.value, regime,
+                        "regime_blocked | symbol={} strategy={} direction={} regime={} market={}",
+                        symbol, sig.name, result.direction.value, regime, market,
                     )
                     continue
 
@@ -926,6 +930,9 @@ class AutoTrader:
 
         # -- Regime detection & session bias ---------------------------------
         regime = self.regime_detector.detect(candles_1h or candles_5m)
+        if not hasattr(self, "_last_regime_by_symbol"):
+            self._last_regime_by_symbol = {}
+        self._last_regime_by_symbol[symbol.upper()] = regime
         bias_state = self._session_bias_state(symbol)
         if candles_1h and len(candles_1h) >= 50:
             if self._session_bias_enabled():
@@ -950,8 +957,9 @@ class AutoTrader:
             if not self._strategy_allowed_for_market(sig.name, "crypto"):
                 continue
             try:
+                market = "crypto"
                 result = self._run_signal(
-                    sig, symbol, candles_5m, current_price, "crypto",
+                    sig, symbol, candles_5m, current_price, market,
                     None, 0.0, candles_1h=candles_1h,
                 )
                 if not result.triggered:
@@ -985,10 +993,10 @@ class AutoTrader:
                             continue
 
                 # -- Trend filter gate --------------------------------------
-                if not self._regime_allows(sig.name, result.direction, regime):
+                if not self._regime_allows(sig.name, result.direction, regime, market=market):
                     logger.info(
-                        "regime_blocked | symbol={} strategy={} direction={} regime={}",
-                        symbol, sig.name, result.direction.value, regime,
+                        "regime_blocked | symbol={} strategy={} direction={} regime={} market={}",
+                        symbol, sig.name, result.direction.value, regime, market,
                     )
                     continue
 
@@ -1217,16 +1225,37 @@ class AutoTrader:
         return True
 
     def _combo_allows(self, symbol: str, strategy: str) -> bool:
-        """Skip (symbol, strategy) combos with >= COMBO_DISABLE_MIN_TRADES and 0% win rate."""
+        """Mute (symbol, strategy) combos that are bleeding.
+
+        Two-threshold gate (either trips mute):
+          - n >= fast_n AND win_rate <= 25% AND net_pnl < 0  (fast mute on clearly losing combos)
+          - n >= COMBO_DISABLE_MIN_TRADES AND net_pnl < 0  (slow mute on any sustained bleed)
+
+        fast_n is 5 for crypto symbols (smaller crypto-trade samples bleed
+        out before the stock threshold; 2026-04-16..05-05 audit: every
+        regime/direction slice on crypto was net-negative). Stocks keep 8.
+        """
+        fast_n = 5 if "/" in symbol else 8
         recent = self.db.get_recent_closed_trades(
-            symbol=symbol, strategy=strategy, limit=COMBO_DISABLE_MIN_TRADES,
+            symbol=symbol, strategy=strategy,
+            limit=max(COMBO_DISABLE_MIN_TRADES, fast_n),
         )
-        if len(recent) < COMBO_DISABLE_MIN_TRADES:
+        if len(recent) < fast_n:
             return True
-        if all(t["outcome"] == "loss" for t in recent):
+        wins = sum(1 for t in recent if t["outcome"] == "win")
+        net_pnl = sum((t.get("pnl") or 0.0) for t in recent)
+        win_rate = wins / len(recent)
+
+        if win_rate <= 0.25 and net_pnl < 0:
             logger.warning(
-                "combo_auto_disabled | symbol={} strategy={} trades={} win_rate=0%",
-                symbol, strategy, len(recent),
+                "combo_auto_disabled_fast | symbol={} strategy={} n={} wr={:.0%} pnl={:.2f}",
+                symbol, strategy, len(recent), win_rate, net_pnl,
+            )
+            return False
+        if len(recent) >= COMBO_DISABLE_MIN_TRADES and net_pnl < 0:
+            logger.warning(
+                "combo_auto_disabled_slow | symbol={} strategy={} n={} wr={:.0%} pnl={:.2f}",
+                symbol, strategy, len(recent), win_rate, net_pnl,
             )
             return False
         return True
@@ -1260,11 +1289,18 @@ class AutoTrader:
             count = self._combo_cooldown_count[key]
             self._combo_cooldown_last_trade_id[key] = most_recent_id
 
-            cooldown_until = time.time() + STRATEGY_COOLDOWN_MINUTES * 60
+            # Escalating cooldown: 1st=60min, 2nd=240min, 3rd+=1440min (24h)
+            if count >= 3:
+                cooldown_min = 1440
+            elif count == 2:
+                cooldown_min = 240
+            else:
+                cooldown_min = STRATEGY_COOLDOWN_MINUTES
+            cooldown_until = time.time() + cooldown_min * 60
             self._combo_cooldown_until[key] = cooldown_until
             logger.warning(
                 "combo_cooldown_triggered | symbol={} strategy={} consecutive_losses={} cooldown_min={} trigger_count={}",
-                symbol, strategy, STRATEGY_COOLDOWN_LOSSES, STRATEGY_COOLDOWN_MINUTES, count,
+                symbol, strategy, STRATEGY_COOLDOWN_LOSSES, cooldown_min, count,
             )
             return False
 
@@ -1274,10 +1310,18 @@ class AutoTrader:
                 self._combo_cooldown_count[key] = 0
         return True
 
-    def _symbol_size_multiplier(self, symbol: str) -> float:
-        """Per-symbol position-size multiplier from config (e.g. 0.5x for newly-added names)."""
+    def _symbol_size_multiplier(self, symbol: str, strategy: str | None = None) -> float:
+        """Per-symbol and per-(symbol,strategy) position-size multiplier.
+
+        Looks up ``symbol:strategy`` first (e.g. "NVDA:vwap_reversion"), then
+        falls back to plain ``symbol``. Missing → 1.0.
+        """
         multipliers = self.config.get("symbol_size_multipliers", {})
         try:
+            if strategy:
+                combo_key = f"{symbol}:{strategy}"
+                if combo_key in multipliers:
+                    return float(multipliers[combo_key])
             return float(multipliers.get(symbol, 1.0))
         except (TypeError, ValueError):
             return 1.0
@@ -1324,6 +1368,7 @@ class AutoTrader:
         strategy_name: str,
         direction: SignalDirection | None,
         regime: str,
+        market: str = "crypto",
     ) -> bool:
         """Check whether *regime* permits *direction* for *strategy_name*.
 
@@ -1331,6 +1376,10 @@ class AutoTrader:
         - Longs are ONLY allowed in trending_up regime, EXCEPT for
           reversal/mean-reversion strategies (vpoc_bounce, macd_divergence)
           which are also allowed in ranging markets
+        - Stock shorts are BLOCKED in trending_up regime (2026-04-13..16
+          audit: stock shorts -$281 vs stock longs +$885 — shorting stocks
+          into uptrends was the loss mode). Applies to all non-exempt
+          strategies on market == "stock".
         - rsi_momentum  shorts only in trending_down or ranging
         - bollinger_fade fires freely in ranging, but in trends it only
           takes pullbacks in the direction of the trend
@@ -1351,6 +1400,14 @@ class AutoTrader:
                 pass  # allowed
             else:
                 return False
+
+        # Stock short gate: never short stocks into a confirmed uptrend.
+        if (
+            market == "stock"
+            and direction == SignalDirection.SHORT
+            and regime == "trending_up"
+        ):
+            return False
 
         if strategy_name == "rsi_momentum":
             if direction == SignalDirection.SHORT:
@@ -1731,9 +1788,9 @@ class AutoTrader:
             available_cash=available_cash, market=market,
         )
 
-        # Scale quantity by recent win rate AND per-symbol multiplier
+        # Scale quantity by recent win rate AND per-(symbol, strategy) multiplier
         size_mult = self._winrate_size_multiplier(result.strategy_name)
-        sym_mult = self._symbol_size_multiplier(symbol)
+        sym_mult = self._symbol_size_multiplier(symbol, result.strategy_name)
         effective_mult = size_mult * sym_mult
         if effective_mult != 1.0:
             raw_qty = quantity
@@ -1835,6 +1892,34 @@ class AutoTrader:
             trade_id, symbol, result.strategy_name,
             result.direction.value, result.entry_price, self.paper_trade,
         )
+
+        if trade_id:
+            self._tag_trade_context(trade_id, symbol)
+
+    def _tag_trade_context(self, trade_id: int, symbol: str) -> None:
+        """Annotate a just-opened trade with regime + weekly swing bias."""
+        try:
+            regime = self._last_regime_by_symbol.get(symbol.upper())
+            bias_value: str | None = None
+            bias_conf: int | None = None
+            try:
+                data = SwingAdvisor.load_weekly_bias()
+                entry = (data.get("biases") or {}).get(symbol.upper())
+                if entry:
+                    bias_value = entry.get("bias")
+                    conf = entry.get("confidence")
+                    bias_conf = int(conf) if conf is not None else None
+            except Exception:
+                bias_value = None
+                bias_conf = None
+            self.db.update_trade_context(
+                trade_id,
+                market_condition=regime,
+                swing_bias=bias_value,
+                swing_confidence=bias_conf,
+            )
+        except Exception:
+            logger.exception("tag_trade_context_failed | trade_id={}", trade_id)
 
     @staticmethod
     def _compute_atr(candles: list, period: int = 14) -> float:

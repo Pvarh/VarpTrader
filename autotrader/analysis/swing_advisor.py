@@ -13,8 +13,16 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
 
-import anthropic
-import yfinance as yf
+try:
+    import anthropic
+except ImportError:  # pragma: no cover
+    anthropic = None  # type: ignore[assignment]
+
+try:
+    import yfinance as yf
+except ImportError:  # pragma: no cover
+    yf = None  # type: ignore[assignment]
+
 import httpx
 from loguru import logger
 

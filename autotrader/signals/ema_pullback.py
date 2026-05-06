@@ -58,6 +58,8 @@ class EMAPullbackSignal(BaseSignal):
         ema_fast: float,
         ema_slow: float,
         rsi: float,
+        atr: float = 0.0,
+        adx: float = 0.0,
     ) -> SignalResult:
         """Evaluate an EMA pullback entry.
 
@@ -75,10 +77,24 @@ class EMAPullbackSignal(BaseSignal):
         if not self.is_enabled():
             return SignalResult(triggered=False, strategy_name=self.name)
 
-        pullback_pct = self.config.get("pullback_pct", 0.002)
+        # ADX trend strength gate — reject weak/ranging markets
+        min_adx = self.config.get("min_adx", 20)
+        if adx > 0 and adx < min_adx:
+            logger.debug(
+                "adx_too_weak | symbol={} adx={:.1f} min={}",
+                symbol, adx, min_adx,
+            )
+            return SignalResult(
+                triggered=False, strategy_name=self.name,
+                reason=f"ADX {adx:.1f} below minimum {min_adx}",
+            )
+
+        pullback_pct = self.config.get("pullback_pct", 0.008)
         rsi_max_long = self.config.get("rsi_max_long", 55)
         rsi_min_short = self.config.get("rsi_min_short", 45)
         stop_loss_pct = self.config.get("stop_loss_pct", 0.015)
+        atr_stop_mult: float = self.config.get("atr_stop_multiplier", 1.5)
+        rr_ratio: float = self.config.get("rr_ratio", 2.0)
 
         direction: SignalDirection | None = None
         reason = ""
@@ -111,6 +127,10 @@ class EMAPullbackSignal(BaseSignal):
                 )
 
         if direction is None:
+            logger.debug(
+                "no_pullback | symbol={} price={:.4f} ema_fast={:.4f} ema_slow={:.4f} rsi={:.1f}",
+                symbol, current_price, ema_fast, ema_slow, rsi,
+            )
             return SignalResult(
                 triggered=False,
                 strategy_name=self.name,
@@ -131,14 +151,14 @@ class EMAPullbackSignal(BaseSignal):
 
         # ---- Price levels ----------------------------------------------
         entry_price = current_price
-        stop_distance = entry_price * stop_loss_pct
+        stop_distance = atr * atr_stop_mult if atr > 0 else entry_price * stop_loss_pct
 
         if direction == SignalDirection.LONG:
             stop_loss = entry_price - stop_distance
-            take_profit = entry_price + (stop_distance * 2)
+            take_profit = entry_price + (stop_distance * rr_ratio)
         else:
             stop_loss = entry_price + stop_distance
-            take_profit = entry_price - (stop_distance * 2)
+            take_profit = entry_price - (stop_distance * rr_ratio)
 
         logger.info(
             "signal_triggered | signal={} symbol={} direction={} "

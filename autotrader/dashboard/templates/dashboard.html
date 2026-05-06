@@ -4,63 +4,92 @@
 {% block title %}Dashboard - VarpTrader{% endblock %}
 
 {% block content %}
-<!-- Top Stats Row -->
-<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 p-4">
-    <!-- Equity -->
+<!-- Performance Metrics Row -->
+<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 p-4 pb-0">
+    <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Win Rate</div>
+        <div class="text-xl font-bold {% if performance.win_rate >= 50 %}text-green-400{% elif performance.win_rate > 0 %}text-yellow-400{% else %}text-gray-500{% endif %}" id="winRate">{{ performance.win_rate }}%</div>
+        <div class="text-[10px] text-gray-600 mt-0.5">{{ performance.total_trades }} trades</div>
+    </div>
+    <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Profit Factor</div>
+        <div class="text-xl font-bold {% if performance.profit_factor >= 1.5 %}text-green-400{% elif performance.profit_factor >= 1.0 %}text-yellow-400{% else %}text-red-400{% endif %}" id="profitFactor">{{ performance.profit_factor }}</div>
+        <div class="text-[10px] text-gray-600 mt-0.5">gross P / gross L</div>
+    </div>
+    <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Sharpe Ratio</div>
+        <div class="text-xl font-bold {% if performance.sharpe >= 1.0 %}text-green-400{% elif performance.sharpe >= 0 %}text-yellow-400{% else %}text-red-400{% endif %}" id="sharpeRatio">{{ performance.sharpe }}</div>
+        <div class="text-[10px] text-gray-600 mt-0.5">annualized</div>
+    </div>
+    <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Max Drawdown</div>
+        <div class="text-xl font-bold text-red-400" id="maxDrawdown">${{ "{:,.2f}".format(performance.max_drawdown) }}</div>
+        <div class="text-[10px] text-gray-600 mt-0.5">from peak</div>
+    </div>
+    <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Avg Trade</div>
+        <div class="text-xl font-bold {% if performance.avg_pnl > 0 %}text-green-400{% elif performance.avg_pnl < 0 %}text-red-400{% else %}text-gray-500{% endif %}" id="avgPnl">{% if performance.avg_pnl >= 0 %}+{% endif %}${{ "{:,.2f}".format(performance.avg_pnl|abs) }}</div>
+        <div class="text-[10px] text-gray-600 mt-0.5">per closed trade</div>
+    </div>
+    <div class="bg-dark-800 border rounded-lg p-3 {% if kill_switch_active %}border-red-500 bg-red-500/10{% else %}border-dark-600{% endif %}" id="killSwitchCard">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Kill Switch</div>
+        <div class="text-xl font-bold flex items-center gap-2" id="killSwitch">
+            <span class="w-2 h-2 rounded-full inline-block {% if kill_switch_active %}bg-red-400 shadow-[0_0_6px] shadow-red-400 animate-pulse{% else %}bg-green-400 shadow-[0_0_6px] shadow-green-400{% endif %}" id="ksIndicator"></span>
+            <span id="ksText" class="{% if kill_switch_active %}text-red-400{% else %}text-green-400{% endif %}">{% if kill_switch_active %}HALTED{% else %}OK{% endif %}</span>
+        </div>
+    </div>
+</div>
+
+<!-- Portfolio Stats Row -->
+<div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3 px-4 pt-3">
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Equity</div>
         <div class="text-lg font-bold text-white" id="equity">${{ "{:,.2f}".format(equity) }}</div>
     </div>
-    <!-- Cash -->
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Cash</div>
         <div class="text-lg font-bold text-white" id="cash">${{ "{:,.2f}".format(cash) }}</div>
     </div>
-    <!-- Invested -->
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Invested</div>
         <div class="text-lg font-bold text-blue-400" id="invested">${{ "{:,.2f}".format(invested) }}</div>
     </div>
-    <!-- Realized P&L -->
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Realized P&L</div>
         <div class="text-lg font-bold {% if daily_pnl > 0 %}text-green-400{% elif daily_pnl < 0 %}text-red-400{% else %}text-gray-500{% endif %}" id="dailyPnl">
-            {% if daily_pnl >= 0 %}+{% else %}-{% endif %}${{ "%.2f"|format(daily_pnl|abs) }}
+            {% if daily_pnl >= 0 %}+${{ "%.2f"|format(daily_pnl) }}{% else %}-${{ "%.2f"|format(daily_pnl|abs) }}{% endif %}
         </div>
     </div>
-    <!-- Unrealized P&L -->
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Unrealized P&L</div>
         <div class="text-lg font-bold {% if unrealized_pnl > 0 %}text-green-400{% elif unrealized_pnl < 0 %}text-red-400{% else %}text-gray-500{% endif %}" id="unrealizedPnl">
             {% if unrealized_pnl >= 0 %}+{% endif %}${{ "%.2f"|format(unrealized_pnl|abs) }}
         </div>
     </div>
-    <!-- Kill Switch -->
-    <div class="bg-dark-800 border rounded-lg p-3 {% if kill_switch_active %}border-red-500 bg-red-500/10{% else %}border-dark-600{% endif %}" id="killSwitchCard">
-        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Kill Switch</div>
-        <div class="text-lg font-bold flex items-center gap-2" id="killSwitch">
-            <span class="w-2 h-2 rounded-full inline-block {% if kill_switch_active %}bg-red-400 shadow-[0_0_6px] shadow-red-400 animate-pulse{% else %}bg-green-400 shadow-[0_0_6px] shadow-green-400{% endif %}" id="ksIndicator"></span>
-            <span id="ksText" class="{% if kill_switch_active %}text-red-400{% else %}text-green-400{% endif %}">{% if kill_switch_active %}HALTED{% else %}OK{% endif %}</span>
-        </div>
-    </div>
-    <!-- Mode & Uptime -->
     <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
         <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Mode / Uptime</div>
         <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 rounded text-[11px] font-semibold uppercase {% if paper_mode %}bg-yellow-400/10 text-yellow-400{% else %}bg-red-400/10 text-red-400{% endif %}">
+            <span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase {% if paper_mode %}bg-yellow-400/10 text-yellow-400{% else %}bg-red-400/10 text-red-400{% endif %}">
                 {% if paper_mode %}PAPER{% else %}LIVE{% endif %}
             </span>
             <span class="text-sm font-bold text-gray-400" id="uptime">--</span>
         </div>
     </div>
+    <div class="bg-dark-800 border border-dark-600 rounded-lg p-3">
+        <div class="text-[10px] text-gray-500 uppercase tracking-wider mb-1">Regime / Filters</div>
+        <div class="flex flex-wrap gap-1">
+            {% for strat in regime_status.get('enabled_strategies', []) %}
+            <span class="px-1.5 py-0.5 rounded text-[9px] font-medium bg-green-400/10 text-green-400">{{ strat }}</span>
+            {% endfor %}
+        </div>
+    </div>
 </div>
 
-<div class="px-4 pb-8 flex flex-col gap-4">
+<div class="px-4 pt-3 pb-8 flex flex-col gap-4">
     {% if paper_mode %}
     <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
         <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
             <span>Manual Paper Trade</span>
-            <span class="text-[10px] text-gray-500">Buy opens a manual long. Sell closes the selected open position.</span>
         </div>
         <div class="p-4 flex flex-col md:flex-row gap-3 md:items-end">
             <div class="flex-1">
@@ -72,26 +101,35 @@
                 </select>
             </div>
             <div class="flex gap-2">
-                <button type="button" onclick="submitManualOrder('buy')" class="px-4 py-2 rounded text-xs font-semibold uppercase bg-green-400/10 text-green-400 hover:bg-green-400/20">
-                    Buy
-                </button>
-                <button type="button" onclick="submitManualOrder('sell')" class="px-4 py-2 rounded text-xs font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">
-                    Sell / Close
-                </button>
+                <button type="button" onclick="submitManualOrder('buy')" class="px-4 py-2 rounded text-xs font-semibold uppercase bg-green-400/10 text-green-400 hover:bg-green-400/20 transition">Buy</button>
+                <button type="button" onclick="submitManualOrder('sell')" class="px-4 py-2 rounded text-xs font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20 transition">Sell / Close</button>
             </div>
         </div>
     </div>
     {% endif %}
 
-    <!-- Equity Curve -->
-    <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
-        <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
-            <span>Equity Curve</span>
-            <span class="text-[10px] text-gray-500 bg-dark-900 px-2 py-0.5 rounded-full">30 days</span>
+    <!-- Charts Row: Daily P&L + Strategy P&L -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
+            <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
+                <span>Daily P&L</span>
+                <span class="text-[10px] text-gray-500 bg-dark-900 px-2 py-0.5 rounded-full">30 days</span>
+            </div>
+            <div class="p-4">
+                <div class="relative h-56">
+                    <canvas id="dailyPnlChart"></canvas>
+                </div>
+            </div>
         </div>
-        <div class="p-4">
-            <div class="relative h-64">
-                <canvas id="equityChart"></canvas>
+        <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
+            <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
+                <span>Strategy P&L</span>
+                <span class="text-[10px] text-gray-500 bg-dark-900 px-2 py-0.5 rounded-full">30 days</span>
+            </div>
+            <div class="p-4">
+                <div class="relative h-56">
+                    <canvas id="strategyPnlChart"></canvas>
+                </div>
             </div>
         </div>
     </div>
@@ -129,7 +167,10 @@
                             </td>
                             <td class="px-4 py-2 text-right text-gray-400">{{ p.qty }}</td>
                             <td class="px-4 py-2 text-right">${{ "{:,.2f}".format(p.avg_entry_price) }}</td>
-                            <td class="px-4 py-2 text-right text-gray-400">--</td>
+                            <td class="px-4 py-2 text-right text-gray-400" data-symbol="{{ p.symbol }}">
+                                {% set est = p.market_value / p.qty if p.qty else 0 %}
+                                ${{ "{:,.2f}".format(est) }}
+                            </td>
                             <td class="px-4 py-2 text-right">${{ "{:,.2f}".format(p.market_value) }}</td>
                             <td class="px-4 py-2 text-right font-semibold
                                 {% if p.unrealized_pl > 0 %}text-green-400{% elif p.unrealized_pl < 0 %}text-red-400{% else %}text-gray-500{% endif %}">
@@ -137,13 +178,7 @@
                             </td>
                             {% if paper_mode %}
                             <td class="px-4 py-2 text-right">
-                                <button
-                                    type="button"
-                                    onclick='closeDashboardPosition({{ p.symbol|tojson }})'
-                                    class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20"
-                                >
-                                    Close
-                                </button>
+                                <button type="button" onclick='closeDashboardPosition({{ p.symbol|tojson }})' class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">Close</button>
                             </td>
                             {% endif %}
                         </tr>
@@ -158,7 +193,6 @@
 
     <!-- Two Column: DB Trades + Recent Trades -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <!-- Open Trades (DB) -->
         <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
             <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold">Open Trades (DB)</div>
             <div class="overflow-x-auto">
@@ -191,13 +225,7 @@
                                 <td class="px-3 py-2 text-right text-green-400/70">{{ "%.4f"|format(t.take_profit) }}</td>
                                 {% if paper_mode %}
                                 <td class="px-3 py-2 text-right">
-                                    <button
-                                        type="button"
-                                        onclick='closeDashboardPosition({{ t.symbol|tojson }})'
-                                        class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20"
-                                    >
-                                        Close
-                                    </button>
+                                    <button type="button" onclick='closeDashboardPosition({{ t.symbol|tojson }})' class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">Close</button>
                                 </td>
                                 {% endif %}
                             </tr>
@@ -210,11 +238,13 @@
             </div>
         </div>
 
-        <!-- Recent Trades -->
         <div class="bg-dark-800 border border-dark-600 rounded-lg overflow-hidden">
             <div class="px-4 py-3 border-b border-dark-600 text-xs font-semibold flex justify-between items-center">
                 <span>Recent Trades</span>
-                <a href="/trades" class="text-[11px] text-blue-400 hover:underline font-medium">View all</a>
+                <div class="flex items-center gap-3">
+                    <a href="/export/trades?days=30" class="text-[11px] text-gray-500 hover:text-gray-300 font-medium transition" onclick="event.preventDefault(); exportCSV();">CSV</a>
+                    <a href="/trades" class="text-[11px] text-blue-400 hover:underline font-medium">View all</a>
+                </div>
             </div>
             <div class="overflow-x-auto">
                 <table class="w-full text-xs">
@@ -268,41 +298,52 @@
 
 {% block scripts %}
 <script>
-    const pnlHistory = {{ pnl_history|safe }};
-    let equityChart = null;
+    const dailyPnlData = {{ daily_pnl_data|safe }};
+    const strategyPnlData = {{ strategy_pnl|safe }};
 
-    function renderEquityChart() {
-        const labels = pnlHistory.map(h => {
-            const d = new Date(h.date + 'T00:00:00');
+    function renderDailyPnlChart() {
+        const labels = dailyPnlData.map(function(h) {
+            var d = new Date(h.date + 'T00:00:00');
             return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
         });
-        let cumulative = 0;
-        const vals = pnlHistory.map(h => {
-            cumulative += h.pnl;
-            return parseFloat(cumulative.toFixed(2));
-        });
-        const ctx = document.getElementById('equityChart').getContext('2d');
-        if (equityChart) equityChart.destroy();
+        var cumulative = 0;
+        const cumulativeVals = dailyPnlData.map(function(h) { cumulative += h.pnl; return parseFloat(cumulative.toFixed(2)); });
+        const dailyVals = dailyPnlData.map(function(h) { return h.pnl; });
+        const barColors = dailyVals.map(function(v) { return v >= 0 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)'; });
 
-        const gradient = ctx.createLinearGradient(0, 0, 0, 250);
+        var ctx = document.getElementById('dailyPnlChart').getContext('2d');
+        var gradient = ctx.createLinearGradient(0, 0, 0, 220);
         gradient.addColorStop(0, 'rgba(59,130,246,0.15)');
         gradient.addColorStop(1, 'rgba(59,130,246,0.0)');
 
-        equityChart = new Chart(ctx, {
-            type: 'line',
+        new Chart(ctx, {
             data: {
                 labels: labels,
-                datasets: [{
-                    label: 'Cumulative P&L ($)',
-                    data: vals,
-                    borderColor: '#3b82f6',
-                    backgroundColor: gradient,
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 0,
-                    pointHitRadius: 10,
-                    borderWidth: 2,
-                }]
+                datasets: [
+                    {
+                        type: 'bar',
+                        label: 'Daily P&L',
+                        data: dailyVals,
+                        backgroundColor: barColors,
+                        borderRadius: 2,
+                        order: 2,
+                        yAxisID: 'y1',
+                    },
+                    {
+                        type: 'line',
+                        label: 'Cumulative',
+                        data: cumulativeVals,
+                        borderColor: '#3b82f6',
+                        backgroundColor: gradient,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHitRadius: 10,
+                        borderWidth: 2,
+                        order: 1,
+                        yAxisID: 'y',
+                    }
+                ]
             },
             options: {
                 responsive: true,
@@ -316,17 +357,26 @@
                         borderWidth: 1,
                         titleColor: '#6b7080',
                         bodyColor: '#e5e7eb',
-                        bodyFont: { weight: '600' },
                         padding: 10,
                         callbacks: {
-                            label: ctx => (ctx.parsed.y >= 0 ? '+' : '') + '$' + ctx.parsed.y.toFixed(2)
+                            label: function(ctx) {
+                                var v = ctx.parsed.y;
+                                return ctx.dataset.label + ': ' + (v >= 0 ? '+' : '') + '$' + v.toFixed(2);
+                            }
                         }
                     }
                 },
                 scales: {
                     y: {
+                        position: 'left',
                         grid: { color: 'rgba(30,34,48,0.5)', drawBorder: false },
-                        ticks: { color: '#6b7080', font: { size: 11 }, callback: v => (v >= 0 ? '+' : '') + '$' + v },
+                        ticks: { color: '#6b7080', font: { size: 10 }, callback: function(v) { return (v >= 0 ? '+' : '') + '$' + v; } },
+                        border: { display: false }
+                    },
+                    y1: {
+                        position: 'right',
+                        grid: { display: false },
+                        ticks: { color: '#6b7080', font: { size: 10 }, callback: function(v) { return (v >= 0 ? '+' : '') + '$' + v; } },
                         border: { display: false }
                     },
                     x: {
@@ -339,9 +389,66 @@
         });
     }
 
+    function renderStrategyPnlChart() {
+        var strategies = Object.keys(strategyPnlData);
+        if (!strategies.length) return;
+
+        var pnls = strategies.map(function(s) { return strategyPnlData[s].pnl; });
+        var winRates = strategies.map(function(s) { return strategyPnlData[s].win_rate; });
+        var barColors = pnls.map(function(v) { return v >= 0 ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)'; });
+
+        var ctx = document.getElementById('strategyPnlChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: strategies,
+                datasets: [{
+                    label: 'P&L ($)',
+                    data: pnls,
+                    backgroundColor: barColors,
+                    borderRadius: 4,
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#1a1e28',
+                        borderColor: '#1e2230',
+                        borderWidth: 1,
+                        titleColor: '#6b7080',
+                        bodyColor: '#e5e7eb',
+                        padding: 10,
+                        callbacks: {
+                            afterLabel: function(ctx) {
+                                var s = strategies[ctx.dataIndex];
+                                var d = strategyPnlData[s];
+                                return 'Win Rate: ' + d.win_rate + '% | Trades: ' + d.trades;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        grid: { color: 'rgba(30,34,48,0.5)', drawBorder: false },
+                        ticks: { color: '#6b7080', font: { size: 10 }, callback: function(v) { return (v >= 0 ? '+' : '') + '$' + v; } },
+                        border: { display: false }
+                    },
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#6b7080', font: { size: 11 } },
+                        border: { display: false }
+                    }
+                }
+            }
+        });
+    }
+
     function formatUptime(sec) {
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
+        var h = Math.floor(sec / 3600);
+        var m = Math.floor((sec % 3600) / 60);
         if (h > 0) return h + 'h ' + m + 'm';
         return m + 'm';
     }
@@ -349,22 +456,24 @@
     function fmt(v) { return v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
     function fmtPnl(v) { return (v >= 0 ? '+' : '') + '$' + fmt(Math.abs(v)); }
     function pnlClass(v) { return v > 0 ? 'text-green-400' : v < 0 ? 'text-red-400' : 'text-gray-500'; }
-    const paperMode = {{ 'true' if paper_mode else 'false' }};
+    var paperMode = {{ 'true' if paper_mode else 'false' }};
+
     function getDashboardApiKey() {
-        const existing = localStorage.getItem('dashboardApiKey') || '';
+        var existing = localStorage.getItem('dashboardApiKey') || '';
         if (existing) return existing;
-        const entered = prompt('Enter Dashboard API Key (leave blank if dashboard auth is disabled):') || '';
+        var entered = prompt('Enter Dashboard API Key (leave blank if disabled):') || '';
         if (entered) localStorage.setItem('dashboardApiKey', entered);
         return entered;
     }
+
     async function apiFetch(url, options) {
-        const cfg = Object.assign({}, options || {});
+        var cfg = Object.assign({}, options || {});
         cfg.headers = Object.assign({}, cfg.headers || {});
-        const stored = localStorage.getItem('dashboardApiKey');
+        var stored = localStorage.getItem('dashboardApiKey');
         if (stored) cfg.headers['X-API-Key'] = stored;
-        let resp = await fetch(url, cfg);
+        var resp = await fetch(url, cfg);
         if (resp.status === 403) {
-            const entered = prompt('Enter Dashboard API Key:') || '';
+            var entered = prompt('Enter Dashboard API Key:') || '';
             if (!entered) return resp;
             localStorage.setItem('dashboardApiKey', entered);
             cfg.headers['X-API-Key'] = entered;
@@ -372,62 +481,75 @@
         }
         return resp;
     }
+
     function sideSpan(s) {
-        const c = s === 'long' ? 'bg-green-400/10 text-green-400' : 'bg-red-400/10 text-red-400';
+        var c = s === 'long' ? 'bg-green-400/10 text-green-400' : 'bg-red-400/10 text-red-400';
         return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase ' + c + '">' + s + '</span>';
     }
     function outcomeSpan(o) {
-        const m = {win:'bg-green-400/10 text-green-400', loss:'bg-red-400/10 text-red-400', open:'bg-yellow-400/10 text-yellow-400'};
-        const c = m[o] || 'bg-dark-900 text-gray-500';
+        var m = {win:'bg-green-400/10 text-green-400', loss:'bg-red-400/10 text-red-400', open:'bg-yellow-400/10 text-yellow-400'};
+        var c = m[o] || 'bg-dark-900 text-gray-500';
         return '<span class="px-2 py-0.5 rounded text-[10px] font-semibold uppercase ' + c + '">' + o + '</span>';
     }
     function closeButton(symbol, padded) {
         if (!paperMode) return '';
-        const pad = padded === 'compact' ? 'px-3 py-2' : 'px-4 py-2';
-        return '<td class="' + pad + ' text-right">' +
-            '<button type="button" onclick=\'closeDashboardPosition(' + JSON.stringify(symbol) + ')\' class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">Close</button>' +
-            '</td>';
+        var pad = padded === 'compact' ? 'px-3 py-2' : 'px-4 py-2';
+        return '<td class="' + pad + ' text-right"><button type="button" onclick=\'closeDashboardPosition(' + JSON.stringify(symbol) + ')\' class="px-3 py-1 rounded text-[10px] font-semibold uppercase bg-red-400/10 text-red-400 hover:bg-red-400/20">Close</button></td>';
     }
+
     async function submitManualOrder(action) {
-        const select = document.getElementById('manualTradeSymbol');
-        const symbol = select ? select.value : '';
-        if (!symbol) {
-            alert('Select a symbol first.');
-            return;
-        }
+        var select = document.getElementById('manualTradeSymbol');
+        var symbol = select ? select.value : '';
+        if (!symbol) { showToast('Select a symbol first', 'warning'); return; }
         try {
-            const resp = await apiFetch('/orders/manual', {
+            var resp = await apiFetch('/orders/manual', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: action, symbol: symbol }),
             });
-            const data = await resp.json();
+            var data = await resp.json();
             if (!resp.ok) throw new Error(data.detail || 'Request failed');
-            window.location.reload();
+            showToast(action.toUpperCase() + ' ' + symbol + ' executed', 'success');
+            setTimeout(function() { window.location.reload(); }, 1500);
         } catch (err) {
-            alert((action === 'buy' ? 'Buy' : 'Sell') + ' failed: ' + err.message);
+            showToast(action + ' failed: ' + err.message, 'error');
         }
     }
+
     async function closeDashboardPosition(symbol) {
         if (!confirm('Close ' + symbol + '?')) return;
         try {
-            const resp = await apiFetch('/positions/close/' + encodeURIComponent(symbol), { method: 'POST' });
-            const data = await resp.json();
+            var resp = await apiFetch('/positions/close/' + encodeURIComponent(symbol), { method: 'POST' });
+            var data = await resp.json();
             if (!resp.ok) throw new Error(data.detail || 'Close failed');
-            window.location.reload();
+            showToast(symbol + ' closed. PnL: $' + (data.pnl || 0).toFixed(2), data.pnl >= 0 ? 'success' : 'error');
+            setTimeout(function() { window.location.reload(); }, 1500);
         } catch (err) {
-            alert('Close failed: ' + err.message);
+            showToast('Close failed: ' + err.message, 'error');
+        }
+    }
+
+    async function exportCSV() {
+        try {
+            var resp = await apiFetch('/export/trades?days=30');
+            if (!resp.ok) throw new Error('Export failed');
+            var blob = await resp.blob();
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url; a.download = 'trades.csv'; a.click();
+            URL.revokeObjectURL(url);
+            showToast('CSV downloaded', 'success');
+        } catch (err) {
+            showToast('Export failed: ' + err.message, 'error');
         }
     }
 
     window.onPnlUpdate = function(data) {
         if (data.type !== 'pnl_update') return;
 
-        // Stats cards
         var el;
         el = document.getElementById('dailyPnl');
-        el.textContent = fmtPnl(data.daily_pnl);
-        el.className = 'text-lg font-bold ' + pnlClass(data.daily_pnl);
+        if (el) { el.textContent = fmtPnl(data.daily_pnl); el.className = 'text-lg font-bold ' + pnlClass(data.daily_pnl); }
 
         el = document.getElementById('unrealizedPnl');
         if (el) { el.textContent = fmtPnl(data.unrealized_pnl || 0); el.className = 'text-lg font-bold ' + pnlClass(data.unrealized_pnl || 0); }
@@ -441,7 +563,20 @@
         el = document.getElementById('equity');
         if (el && data.equity !== undefined) el.textContent = '$' + fmt(data.equity);
 
-        document.getElementById('openPositions') && (document.getElementById('openPositions').textContent = data.open_positions);
+        // Performance metrics live update
+        if (data.performance) {
+            var p = data.performance;
+            el = document.getElementById('winRate');
+            if (el) el.textContent = p.win_rate + '%';
+            el = document.getElementById('profitFactor');
+            if (el) el.textContent = p.profit_factor;
+            el = document.getElementById('sharpeRatio');
+            if (el) el.textContent = p.sharpe;
+            el = document.getElementById('maxDrawdown');
+            if (el) el.textContent = '$' + fmt(p.max_drawdown);
+            el = document.getElementById('avgPnl');
+            if (el) { el.textContent = fmtPnl(p.avg_pnl); el.className = 'text-xl font-bold ' + pnlClass(p.avg_pnl); }
+        }
 
         // Kill switch
         var ksCard = document.getElementById('killSwitchCard');
@@ -459,7 +594,7 @@
 
         if (data.uptime_seconds) document.getElementById('uptime').textContent = formatUptime(data.uptime_seconds);
 
-        // Portfolio positions table
+        // Portfolio positions
         if (data.portfolio_positions) {
             var tbody = document.getElementById('portfolioPositionsBody');
             if (!data.portfolio_positions.length) {
@@ -467,12 +602,14 @@
             } else {
                 tbody.innerHTML = data.portfolio_positions.map(function(p) {
                     var upl = p.unrealized_pl || 0;
+                    var qty = Math.abs(p.qty || 0);
+                    var curPrice = qty > 0 && p.market_value > 0 ? (p.market_value / qty) : p.avg_entry_price;
                     return '<tr class="border-b border-dark-600 last:border-0 hover:bg-dark-700">' +
                         '<td class="px-4 py-2 font-semibold text-white">' + p.symbol + '</td>' +
                         '<td class="px-4 py-2">' + sideSpan(p.side) + '</td>' +
                         '<td class="px-4 py-2 text-right text-gray-400">' + p.qty + '</td>' +
                         '<td class="px-4 py-2 text-right">$' + fmt(p.avg_entry_price) + '</td>' +
-                        '<td class="px-4 py-2 text-right text-gray-400">--</td>' +
+                        '<td class="px-4 py-2 text-right text-gray-400">$' + fmt(curPrice) + '</td>' +
                         '<td class="px-4 py-2 text-right">$' + fmt(p.market_value) + '</td>' +
                         '<td class="px-4 py-2 text-right font-semibold ' + pnlClass(upl) + '">' + fmtPnl(upl) + '</td>' +
                         closeButton(p.symbol, 'wide') +
@@ -481,7 +618,7 @@
             }
         }
 
-        // Open trades table
+        // Open trades
         if (data.open_trades) {
             var tbody2 = document.getElementById('openTradesBody');
             if (!data.open_trades.length) {
@@ -501,7 +638,7 @@
             }
         }
 
-        // Recent trades table
+        // Recent trades
         if (data.recent_trades) {
             var tbody3 = document.getElementById('recentTradesBody');
             if (!data.recent_trades.length) {
@@ -525,7 +662,8 @@
     };
 
     document.addEventListener('DOMContentLoaded', function() {
-        renderEquityChart();
+        renderDailyPnlChart();
+        renderStrategyPnlChart();
     });
 </script>
 {% endblock %}

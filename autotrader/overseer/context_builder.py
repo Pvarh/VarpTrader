@@ -271,11 +271,25 @@ def build_context(
     # Latest nightly analysis report
     sections.append("\n--- LATEST NIGHTLY ANALYSIS REPORT ---")
     if latest_analysis:
+        approval_status = latest_analysis.get("approved", 0)
+        approval_label = {0: "PENDING (not yet approved)", 1: "APPROVED", 2: "REJECTED"}.get(
+            approval_status, f"unknown ({approval_status})"
+        )
         sections.append(
             f"  Run: {latest_analysis.get('run_timestamp', '?')} | "
             f"trades_analyzed={latest_analysis.get('trades_analyzed', '?')} | "
-            f"approved={latest_analysis.get('approved', '?')}"
+            f"approval_status={approval_label}"
         )
+        if approval_status == 0:
+            sections.append(
+                "  WARNING: These nightly recommendations have NOT been approved by the owner yet."
+                " Do NOT apply these config changes. Wait for owner approval via Telegram."
+            )
+        elif approval_status == 2:
+            sections.append(
+                "  NOTE: These nightly recommendations were REJECTED by the owner."
+                " Do NOT apply these changes."
+            )
         report_md = latest_analysis.get("report_markdown") or ""
         if len(report_md) > 2000:
             report_md = report_md[:2000] + "\n  ... (truncated)"

@@ -9,6 +9,7 @@ indexing is straightforward (``result[-1]`` is the most recent value).
 from __future__ import annotations
 
 from datetime import date
+import math
 from math import isnan
 
 import numpy as np
@@ -434,3 +435,204 @@ class Indicators:
                 result[i] = result[i - 1] if i > 0 and current_date == candles[i - 1].timestamp.date() else typical_price
 
         return result
+
+    # ------------------------------------------------------------------
+    # MACD
+    # ------------------------------------------------------------------
+    @staticmethod
+    def macd(
+        closes: list[float],
+        fast: int = 12,
+        slow: int = 26,
+        signal: int = 9,
+    ) -> tuple[list[float], list[float], list[float]]:
+        """Compute MACD line, signal line, and histogram.
+
+        Args:
+            closes: List of closing prices.
+            fast: Fast EMA period.
+            slow: Slow EMA period.
+            signal: Signal line EMA period.
+
+        Returns:
+            Tuple of (macd_line, signal_line, histogram), each same length as input.
+            Early values are NaN where insufficient data exists.
+        """
+        fast_ema = Indicators.ema(closes, fast)
+        slow_ema = Indicators.ema(closes, slow)
+
+        macd_line: list[float] = []
+        for f, s in zip(fast_ema, slow_ema):
+            if math.isnan(f) or math.isnan(s):
+                macd_line.append(float("nan"))
+            else:
+                macd_line.append(f - s)
+
+        # Signal line = EMA of the MACD line (only over non-NaN values)
+        valid_start = slow - 1
+        macd_valid = macd_line[valid_start:]
+        if len(macd_valid) >= signal:
+            signal_ema = Indicators.ema(macd_valid, signal)
+            signal_line = [float("nan")] * valid_start + signal_ema
+        else:
+            signal_line = [float("nan")] * len(closes)
+
+        histogram: list[float] = []
+        for m, s in zip(macd_line, signal_line):
+            if math.isnan(m) or math.isnan(s):
+                histogram.append(float("nan"))
+            else:
+                histogram.append(m - s)
+
+        return macd_line, signal_line, histogram
+
+    # ------------------------------------------------------------------
+    # Volume Profile
+    # ------------------------------------------------------------------
+    @staticmethod
+    def volume_profile(
+        candles: list,
+        num_bins: int = 20,
+    ) -> tuple[float, float, float]:
+        """Compute volume profile and return POC + value area.
+
+        Args:
+            candles: List of OHLCV candles for the session.
+            num_bins: Number of price bins to divide the range into.
+
+        Returns:
+            Tuple of (poc_price, value_area_high, value_area_low).
+            Returns (0.0, 0.0, 0.0) if no candles provided.
+        """
+        if not candles:
+            return 0.0, 0.0, 0.0
+
+        highs = [c.high for c in candles]
+        lows = [c.low for c in candles]
+        price_high = max(highs)
+        price_low = min(lows)
+
+        if price_high == price_low:
+            return price_high, price_high, price_low
+
+        bin_width = (price_high - price_low) / num_bins
+        bins = [0.0] * num_bins
+
+        for c in candles:
+            typical = (c.high + c.low + c.close) / 3
+            idx = min(int((typical - price_low) / bin_width), num_bins - 1)
+            bins[idx] += c.volume
+
+        poc_idx = bins.index(max(bins))
+        poc_price = price_low + (poc_idx + 0.5) * bin_width
+
+        total_volume = sum(bins)
+        if total_volume == 0:
+            return poc_price, price_high, price_low
+
+        va_volume = bins[poc_idx]
+        lo_idx = poc_idx
+        hi_idx = poc_idx
+
+        while va_volume / total_volume < 0.70 and (lo_idx > 0 or hi_idx < num_bins - 1):
+            expand_lo = bins[lo_idx - 1] if lo_idx > 0 else -1.0
+            expand_hi = bins[hi_idx + 1] if hi_idx < num_bins - 1 else -1.0
+            if expand_lo >= expand_hi:
+                lo_idx -= 1
+                va_volume += bins[lo_idx]
+            else:
+                hi_idx += 1
+                va_volume += bins[hi_idx]
+
+        val = price_low + lo_idx * bin_width
+        vah = price_low + (hi_idx + 1) * bin_width
+
+        return poc_price, vah, val
+
+    # ------------------------------------------------------------------
+    # Keltner Channels
+    # ------------------------------------------------------------------
+    @staticmethod
+    def keltner_channels(
+        candles: list[OHLCV],
+        ema_period: int = 20,
+        atr_period: int = 14,
+        atr_mult: float = 1.5,
+    ) -> tuple[list[float], list[float], list[float]]:
+        """Compute Keltner Channels: EMA ± ATR multiplier.
+
+        Parameters
+        ----------
+        candles:
+            List of OHLCV bars, oldest first.
+        ema_period:
+            Period for the centre EMA line.
+        atr_period:
+            Period for the ATR calculation.
+        atr_mult:
+            Multiplier applied to ATR for upper/lower bands.
+
+        Returns
+        -------
+        tuple[list[float], list[float], list[float]]
+            ``(upper, middle, lower)`` each as ``list[float]`` of the same
+            length as *candles*.  Early values are ``NaN``.
+        """
+        if not candles:
+            return ([], [], [])
+        n = len(candles)
+        closes = [c.close for c in candles]
+        middle = Indicators.ema(closes, ema_period)
+        atr_vals = Indicators.atr(candles, atr_period)
+
+        upper = [float("nan")] * n
+        lower = [float("nan")] * n
+        for i in range(n):
+            m = middle[i]
+            a = atr_vals[i]
+            if math.isnan(m) or a == 0.0:
+                continue
+            upper[i] = m + atr_mult * a
+            lower[i] = m - atr_mult * a
+        return (upper, middle, lower)
+
+    @staticmethod
+    def vwap_slope(vwap_values: list[float], lookback: int = 20) -> float:
+        """Compute normalized linear regression slope of VWAP.
+
+        Args:
+            vwap_values: List of VWAP values (time series).
+            lookback: Number of recent values to use for regression.
+
+        Returns:
+            Normalized slope (slope / current_vwap). Near 0 = flat,
+            large positive/negative = trending. Returns 0.0 if insufficient data.
+        """
+        if len(vwap_values) < 2:
+            return 0.0
+
+        window = vwap_values[-lookback:]
+        n = len(window)
+        if n < 2:
+            return 0.0
+
+        sum_x = 0.0
+        sum_y = 0.0
+        sum_xy = 0.0
+        sum_x2 = 0.0
+        for i, v in enumerate(window):
+            sum_x += i
+            sum_y += v
+            sum_xy += i * v
+            sum_x2 += i * i
+
+        denom = n * sum_x2 - sum_x * sum_x
+        if denom == 0:
+            return 0.0
+
+        slope = (n * sum_xy - sum_x * sum_y) / denom
+        current_vwap = window[-1]
+        if current_vwap == 0:
+            return 0.0
+
+        return slope / current_vwap
